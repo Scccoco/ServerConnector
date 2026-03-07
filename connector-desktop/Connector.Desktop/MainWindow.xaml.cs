@@ -30,6 +30,7 @@ public partial class MainWindow : Window
     private string _activeSessionId = string.Empty;
     private UpdateManifest? _pendingUpdate;
     private string? _downloadedInstallerPath;
+    private bool _updateOfferShown;
 
     public MainWindow()
     {
@@ -52,7 +53,54 @@ public partial class MainWindow : Window
         Topmost = false;
         AppendLog("При закрытии окно сворачивается в трей. Для полного выхода: иконка в трее -> Закрыть.");
         _ = TryAutoConnectAsync();
-        _ = CheckUpdatesAsync(showDialogs: false);
+        _ = CheckAndOfferUpdatesAsync();
+    }
+
+    private async Task CheckAndOfferUpdatesAsync()
+    {
+        await CheckUpdatesAsync(showDialogs: false);
+        await OfferUpdateInstallIfAvailableAsync();
+    }
+
+    private async Task OfferUpdateInstallIfAvailableAsync()
+    {
+        if (_updateOfferShown)
+        {
+            return;
+        }
+
+        if (_pendingUpdate is null)
+        {
+            return;
+        }
+
+        _updateOfferShown = true;
+
+        var result = System.Windows.MessageBox.Show(
+            "Доступна новая версия Structura Connector. Установить обновление сейчас?",
+            "Обновление доступно",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        if (result != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            UpdateStateTextBlock.Text = "Обновление: загрузка установщика...";
+            _downloadedInstallerPath = await _updateService.DownloadInstallerAsync(_pendingUpdate, CancellationToken.None);
+            AppendLog("Скачан установщик обновления: " + _downloadedInstallerPath);
+            UpdateService.RunInstaller(_downloadedInstallerPath);
+            ExitFromTray();
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Ошибка автообновления: " + ex.Message);
+            UpdateStateTextBlock.Text = "Обновление: ошибка установки";
+            _updateOfferShown = false;
+        }
     }
 
     private async Task TryAutoConnectAsync()
