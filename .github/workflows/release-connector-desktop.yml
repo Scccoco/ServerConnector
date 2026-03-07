@@ -41,7 +41,7 @@ jobs:
 
           $wxsPath = "connector-desktop/Connector.Desktop.Setup/Package.wxs"
           $wxsRaw = Get-Content $wxsPath -Raw
-          $wxsRaw = [regex]::Replace($wxsRaw, 'Version="[0-9\.]+"', "Version=\"$version\"", 1)
+          $wxsRaw = [regex]::Replace($wxsRaw, 'Version="[0-9\.]+"', ('Version="' + $version + '"'), 1)
           Set-Content -Path $wxsPath -Value $wxsRaw -NoNewline
 
       - name: Build MSI
