@@ -1,0 +1,6 @@
+{
+  "server_url": "https://your-vps-domain-or-ip:8080",
+  "device_id": "user-laptop-1",
+  "token_encrypted_path": "C:/ProgramData/ConnectorAgent/device_token.sec",
+  "heartbeat_seconds": 60
+}

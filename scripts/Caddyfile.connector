@@ -1,0 +1,9 @@
+budget.structura-most.ru {
+    encode gzip
+    reverse_proxy 127.0.0.1:3001
+}
+
+server.structura-most.ru {
+    encode gzip
+    reverse_proxy 127.0.0.1:8080
+}

@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Коннектор - Операционный дашборд</title>
+  <style>
+    :root {
+      --bg: #0a0f16;
+      --panel: #121a24;
+      --stroke: #253347;
+      --text: #e9eef6;
+      --muted: #9fb0c5;
+      --ok: #34d399;
+      --warn: #f59e0b;
+      --bad: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--text); font-family: "Segoe UI", sans-serif; background: var(--bg); }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 22px; }
+    .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+    h1 { margin: 0; font-size: 26px; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .card { background: var(--panel); border: 1px solid var(--stroke); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    input, button {
+      width: 100%; padding: 9px 10px; border-radius: 10px;
+      border: 1px solid var(--stroke); background: #0f1620; color: var(--text);
+    }
+    button { width: auto; cursor: pointer; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .s { border: 1px solid var(--stroke); border-radius: 10px; background: #0f1620; padding: 10px; }
+    .s b { display: block; font-size: 19px; }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .bad { color: var(--bad); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px; font-size: 13px; border-bottom: 1px solid #1f2d40; }
+    th { color: var(--muted); }
+    .mono { font-family: Consolas, monospace; }
+    @media (max-width: 900px) {
+      .row { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <div>
+        <h1>Операционный дашборд коннектора</h1>
+        <div class="muted">Мониторинг устройств и heartbeat в режиме только чтение</div>
+      </div>
+      <button onclick="refreshAll()">Обновить</button>
+    </div>
+
+    <section class="card">
+      <div class="row">
+        <div>
+          <label class="muted">Ключ API администратора</label>
+          <input id="adminKey" type="password" placeholder="X-Admin-Key" />
+        </div>
+        <div>
+          <label class="muted">Порог неактивности (минуты)</label>
+          <input id="staleMin" type="number" value="15" min="1" max="240" />
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="stats">
+        <div class="s"><b id="dTotal">0</b><span class="muted">Всего устройств</span></div>
+        <div class="s"><b id="dHealthy" class="ok">0</b><span class="muted">В норме</span></div>
+        <div class="s"><b id="dStale" class="warn">0</b><span class="muted">Неактивные</span></div>
+        <div class="s"><b id="dRevoked" class="bad">0</b><span class="muted">Токен отозван</span></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3 style="margin-top:0;">Устройства</h3>
+      <div style="overflow:auto; max-height:420px;">
+        <table>
+          <thead>
+            <tr><th>Статус</th><th>Устройство</th><th>Кому выдан</th><th>IP</th><th>Хост</th><th>Обновлено</th><th>Токен</th></tr>
+          </thead>
+          <tbody id="devicesBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    function fmt(v) {
+      if (!v) return '-';
+      return String(v).replace('T', ' ').replace('Z', '');
+    }
+
+    function minsAgo(iso) {
+      if (!iso) return 999999;
+      const d = new Date(iso);
+      return (Date.now() - d.getTime()) / 60000;
+    }
+
+    function statusTag(device, staleMin) {
+      if (device.token_revoked_at) return '<span class="bad">отозван</span>';
+      if (minsAgo(device.updated_at) > staleMin) return '<span class="warn">неактивен</span>';
+      return '<span class="ok">в норме</span>';
+    }
+
+    async function loadDevices() {
+      const key = document.getElementById('adminKey').value;
+      const staleMin = Number(document.getElementById('staleMin').value || 15);
+      const r = await fetch('/admin/devices', { headers: { 'X-Admin-Key': key } });
+      const data = await r.json();
+      if (!r.ok) throw new Error(JSON.stringify(data));
+
+      let healthy = 0;
+      let stale = 0;
+      let revoked = 0;
+
+      const tbody = document.getElementById('devicesBody');
+      tbody.innerHTML = '';
+      for (const d of data.items || []) {
+        const isRevoked = !!d.token_revoked_at;
+        const isStale = minsAgo(d.updated_at) > staleMin;
+        if (isRevoked) revoked += 1;
+        else if (isStale) stale += 1;
+        else healthy += 1;
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${statusTag(d, staleMin)}</td>
+          <td class="mono">${d.device_id || '-'}</td>
+          <td>${d.issued_to || '-'}</td>
+          <td class="mono">${d.public_ip || '-'}</td>
+          <td>${d.hostname || '-'}</td>
+          <td>${fmt(d.updated_at)}</td>
+          <td>${isRevoked ? 'отозван' : 'активен'}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+
+      document.getElementById('dTotal').textContent = (data.items || []).length;
+      document.getElementById('dHealthy').textContent = healthy;
+      document.getElementById('dStale').textContent = stale;
+      document.getElementById('dRevoked').textContent = revoked;
+    }
+
+    async function refreshAll() {
+      try {
+        await loadDevices();
+      } catch (e) {
+        alert('Ошибка обновления: ' + e.message);
+      }
+    }
+  </script>
+</body>
+</html>

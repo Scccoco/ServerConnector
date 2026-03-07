@@ -1,0 +1,65 @@
+name: Release Connector Desktop MSI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Sync app versions from tag
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = if ($tag.StartsWith("v")) { $tag.Substring(1) } else { $tag }
+
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Tag version must be semver like v1.2.3"
+          }
+
+          $assemblyVersion = "$version.0"
+
+          [xml]$csproj = Get-Content "connector-desktop/Connector.Desktop/Connector.Desktop.csproj"
+          $pg = $csproj.Project.PropertyGroup
+          $pg.Version = $version
+          $pg.FileVersion = $assemblyVersion
+          $pg.AssemblyVersion = $assemblyVersion
+          $csproj.Save("connector-desktop/Connector.Desktop/Connector.Desktop.csproj")
+
+          $wxsPath = "connector-desktop/Connector.Desktop.Setup/Package.wxs"
+          $wxsRaw = Get-Content $wxsPath -Raw
+          $wxsRaw = [regex]::Replace($wxsRaw, 'Version="[0-9\.]+"', "Version=\"$version\"", 1)
+          Set-Content -Path $wxsPath -Value $wxsRaw -NoNewline
+
+      - name: Build MSI
+        shell: pwsh
+        run: ./connector-desktop/build_msi.ps1
+
+      - name: Verify MSI artifact
+        shell: pwsh
+        run: |
+          $msi = "connector-desktop/artifacts/Connector.Desktop.Setup.msi"
+          if (-not (Test-Path $msi)) {
+            throw "MSI not found: $msi"
+          }
+
+      - name: Publish GitHub Release with MSI
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Structura Connector ${{ github.ref_name }}
+          generate_release_notes: true
+          files: connector-desktop/artifacts/Connector.Desktop.Setup.msi

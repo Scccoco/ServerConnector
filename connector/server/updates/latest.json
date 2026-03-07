@@ -1,0 +1,5 @@
+{
+  "version": "1.0.1",
+  "msiUrl": "https://server.structura-most.ru/updates/files/Connector.Desktop.Setup.msi",
+  "notes": "Базовый релиз Structura Connector"
+}

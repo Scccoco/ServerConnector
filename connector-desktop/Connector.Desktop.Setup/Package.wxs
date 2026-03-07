@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package Name="Structura Connector"
+           Manufacturer="Structura"
+           Version="1.0.1"
+           UpgradeCode="0E67CBE8-8F77-45EA-B89D-E58C8C554B37"
+           InstallerVersion="500"
+           Compressed="yes"
+           Scope="perUser"
+           Codepage="1251"
+           Language="1049">
+
+    <MajorUpgrade DowngradeErrorMessage="Установлена более новая версия приложения." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="Structura Connector" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.AppSourceDir)\**" />
+    </ComponentGroup>
+
+    <Component Id="AppShortcuts" Directory="INSTALLFOLDER" Guid="6E42910D-22B2-40E7-8B89-1B0BF822E2EF">
+      <Shortcut Id="StartMenuShortcut"
+                Directory="ProgramMenuDir"
+                Name="Structura Connector"
+                Target="[INSTALLFOLDER]Connector.Desktop.exe"
+                WorkingDirectory="INSTALLFOLDER" />
+      <Shortcut Id="DesktopShortcut"
+                Directory="DesktopFolder"
+                Name="Structura Connector"
+                Target="[INSTALLFOLDER]Connector.Desktop.exe"
+                WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue Root="HKCU" Key="Software\Structura\ConnectorDesktop" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+    </Component>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ProgramMenuDir" Name="Structura Connector">
+        <Component Id="ProgramMenuCleanup" Guid="4A46E07D-5F77-4C7F-8DC2-3A1537462CA4">
+          <RemoveFolder Id="RemoveProgramMenuDir" On="uninstall" />
+          <RegistryValue Root="HKCU" Key="Software\Structura\ConnectorDesktop" Name="programMenuCleanup" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="Structura Connector" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="AppShortcuts" />
+      <ComponentRef Id="ProgramMenuCleanup" />
+    </Feature>
+
+  </Package>
+</Wix>

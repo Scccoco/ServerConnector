@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "connector-desktop", "connector-desktop", "{BADB6E80-BDD3-4420-9FFD-FC245314685A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Connector.Desktop", "connector-desktop\Connector.Desktop\Connector.Desktop.csproj", "{C0704DDA-C113-4871-99AF-A40A1EED7E51}"
+EndProject
+Project("{B7DD6F7E-DEF8-4E67-B5B7-07EF123DB6F0}") = "Connector.Desktop.Setup", "connector-desktop\Connector.Desktop.Setup\Connector.Desktop.Setup.wixproj", "{DF1DCE57-8B4A-487E-BCD0-C3BD457E4EDD}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C0704DDA-C113-4871-99AF-A40A1EED7E51}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C0704DDA-C113-4871-99AF-A40A1EED7E51}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C0704DDA-C113-4871-99AF-A40A1EED7E51}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C0704DDA-C113-4871-99AF-A40A1EED7E51}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DF1DCE57-8B4A-487E-BCD0-C3BD457E4EDD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DF1DCE57-8B4A-487E-BCD0-C3BD457E4EDD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DF1DCE57-8B4A-487E-BCD0-C3BD457E4EDD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DF1DCE57-8B4A-487E-BCD0-C3BD457E4EDD}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{C0704DDA-C113-4871-99AF-A40A1EED7E51} = {BADB6E80-BDD3-4420-9FFD-FC245314685A}
+		{DF1DCE57-8B4A-487E-BCD0-C3BD457E4EDD} = {BADB6E80-BDD3-4420-9FFD-FC245314685A}
+	EndGlobalSection
+EndGlobal

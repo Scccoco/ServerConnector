@@ -1,1 +1,25 @@
 CREDENTIALS.md
+connector/server/config.json
+connector/server/connector.db
+connector/agent/agent.json
+
+# Local/private workspace data
+.secrets/
+.opencode/
+opencode.jsonc
+
+# Build outputs
+**/bin/
+**/obj/
+connector-desktop/publish/
+connector-desktop/artifacts/
+connector/agent/ConnectorAgentPackage.zip
+connector/agent/ConnectorAgentSetup.exe
+connector/agent/~ConnectorAgentSetup.CAB
+
+# Python cache
+**/__pycache__/
+*.pyc
+
+# Local odd files
+nul

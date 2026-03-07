@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Коннектор - Панель администратора</title>
+  <style>
+    :root {
+      --bg: #0b1016;
+      --panel: #151d27;
+      --panel-soft: #101822;
+      --stroke: #28364a;
+      --text: #e8eef7;
+      --muted: #9eb0c7;
+      --accent: #5eead4;
+      --danger: #f87171;
+      --warn: #fbbf24;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      color: var(--text);
+      background: radial-gradient(1200px 600px at 80% -100px, #1e2e43, transparent), var(--bg);
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    .hero { display: flex; justify-content: space-between; align-items: end; gap: 16px; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 28px; }
+    .sub { color: var(--muted); font-size: 14px; }
+    .grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; }
+    .card {
+      background: linear-gradient(180deg, var(--panel), var(--panel-soft));
+      border: 1px solid var(--stroke);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.25);
+    }
+    .card h2 { margin: 0 0 12px 0; font-size: 16px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    label { display:block; margin-bottom: 6px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+    input, select {
+      width: 100%;
+      border: 1px solid var(--stroke);
+      background: #0d141d;
+      color: var(--text);
+      border-radius: 10px;
+      padding: 10px 12px;
+      outline: none;
+    }
+    input:focus { border-color: var(--accent); }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    button {
+      border: 1px solid var(--stroke);
+      background: #172130;
+      color: var(--text);
+      border-radius: 10px;
+      padding: 9px 12px;
+      cursor: pointer;
+    }
+    button.primary { background: #113c39; border-color: #2a7c74; }
+    button.warn { background: #3f2d07; border-color: #7c5c11; }
+    button.danger { background: #3d1f22; border-color: #7b2f36; }
+    .full { grid-column: 1 / -1; }
+    .stat { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+    .pill { padding: 10px; border-radius: 10px; border: 1px solid var(--stroke); background: #0d141d; }
+    .pill b { display: block; font-size: 18px; }
+    .pill span { color: var(--muted); font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #233044; }
+    th { color: var(--muted); font-weight: 600; }
+    .mono { font-family: Consolas, monospace; }
+    .inline-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .inline-actions button { padding: 6px 8px; font-size: 12px; }
+    .out {
+      min-height: 110px;
+      background: #0d141d;
+      border: 1px solid var(--stroke);
+      border-radius: 10px;
+      padding: 10px;
+      white-space: pre-wrap;
+      overflow: auto;
+    }
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: 1fr; }
+      .stat { grid-template-columns: 1fr 1fr; }
+      .row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <h1>Панель администратора коннектора</h1>
+        <div class="sub">Выдача, ротация и отзыв токенов. Контроль устройств и аудит.</div>
+        <div id="liveInfo" class="sub" style="margin-top:6px;">Автообновление: каждые 15 сек</div>
+      </div>
+      <div class="actions" style="margin:0;">
+        <button onclick="refreshAll()" class="primary">Обновить все</button>
+        <button onclick="logoutAdmin()" class="danger">Выйти</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Операции с токеном</h2>
+        <div class="sub" style="margin-bottom:10px;">Вы авторизованы. Все действия пишутся в аудит.</div>
+        <div class="row">
+          <div>
+            <label>ID устройства</label>
+            <input id="deviceId" placeholder="user-laptop-1" />
+          </div>
+          <div>
+            <label>Кому выдан (необязательно)</label>
+            <input id="issuedTo" placeholder="Компания | ФИО" />
+          </div>
+        </div>
+        <div style="margin-top:10px;">
+          <label>Имя администратора (для аудита)</label>
+          <input id="adminActor" placeholder="Александр" />
+        </div>
+        <div class="actions">
+          <button class="primary" onclick="issueToken()">Выдать токен</button>
+          <button class="warn" onclick="rotateToken()">Ротировать токен</button>
+          <button class="danger" onclick="revokeToken()">Отозвать токен</button>
+        </div>
+      </section>
+
+      <section class="card full">
+        <h2>Сетевой whitelist (интернет-доступ)</h2>
+        <div class="row">
+          <div>
+            <label>Внешний IP</label>
+            <input id="allowIp" placeholder="193.27.41.84" />
+          </div>
+          <div>
+            <label>Порты (через запятую)</label>
+            <input id="allowPorts" value="8080,445,3389" />
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" onclick="allowIpRule()">Добавить/обновить IP</button>
+          <button class="danger" onclick="revokeIpRule()">Удалить IP из правил</button>
+          <button onclick="loadNetworkRules()">Обновить список</button>
+        </div>
+        <div style="overflow:auto; max-height: 220px; margin-top: 12px;">
+          <table>
+            <thead><tr><th>Правило</th><th>Порт</th><th>IP</th><th>Включено</th></tr></thead>
+            <tbody id="networkBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card full">
+        <div class="stat">
+          <div class="pill"><b id="sDevices">0</b><span>Устройства</span></div>
+          <div class="pill"><b id="sTokens">0</b><span>Токены</span></div>
+          <div class="pill"><b id="sActive">0</b><span>Активные токены</span></div>
+          <div class="pill"><b id="sRevoked">0</b><span>Отозванные токены</span></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Токены</h2>
+        <div style="overflow:auto; max-height: 300px;">
+          <table>
+            <thead><tr><th>Устройство</th><th>Кому выдан</th><th>Создан</th><th>Последнее использование</th><th>Отозван</th><th>Действия</th></tr></thead>
+            <tbody id="tokensBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Устройства</h2>
+        <div style="overflow:auto; max-height: 300px;">
+          <table>
+            <thead><tr><th>Устройство</th><th>IP</th><th>Хост</th><th>Обновлено</th></tr></thead>
+            <tbody id="devicesBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card full">
+        <h2>Аудит (последние 100)</h2>
+        <div style="overflow:auto; max-height: 240px;">
+          <table>
+            <thead><tr><th>ID</th><th>Событие</th><th>Устройство</th><th>Кто</th><th>Детали</th><th>Время</th></tr></thead>
+            <tbody id="auditBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card full">
+        <h2>Результат последнего действия</h2>
+        <div id="out" class="out mono">Готово</div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const out = document.getElementById('out');
+    const actorEl = document.getElementById('adminActor');
+    const liveInfoEl = document.getElementById('liveInfo');
+    const AUTO_REFRESH_MS = 15000;
+    let autoRefreshId = null;
+
+    actorEl.value = localStorage.getItem('connector_admin_actor') || '';
+
+    actorEl.addEventListener('change', () => localStorage.setItem('connector_admin_actor', actorEl.value.trim()));
+
+    function fmt(v) {
+      if (!v) return '-';
+      return String(v).replace('T', ' ').replace('Z', '');
+    }
+
+    function headers(json = true) {
+      const h = {
+        'X-Admin-Actor': document.getElementById('adminActor').value || 'admin'
+      };
+      if (json) h['Content-Type'] = 'application/json';
+      return h;
+    }
+
+    function setOutput(data) {
+      out.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    }
+
+    async function req(url, options = {}) {
+      const r = await fetch(url, { credentials: 'same-origin', ...options });
+      let data;
+      try { data = await r.json(); } catch { data = { ok: false, detail: await r.text() }; }
+      if (r.status === 401) {
+        window.location.href = '/admin/login?next=/admin/ui';
+        throw new Error('Не авторизован');
+      }
+      if (!r.ok) throw new Error(JSON.stringify(data));
+      return data;
+    }
+
+    async function logoutAdmin() {
+      await fetch('/admin/logout', { method: 'POST', credentials: 'same-origin' });
+      window.location.href = '/admin/login';
+    }
+
+    async function issueToken() {
+      const payload = {
+        device_id: document.getElementById('deviceId').value.trim(),
+        issued_to: document.getElementById('issuedTo').value.trim() || null
+      };
+      const data = await req('/admin/tokens', { method: 'POST', headers: headers(true), body: JSON.stringify(payload) });
+      setOutput(data);
+      await refreshAll();
+    }
+
+    async function rotateToken() {
+      const deviceId = document.getElementById('deviceId').value.trim();
+      const payload = { issued_to: document.getElementById('issuedTo').value.trim() || null };
+      const data = await req(`/admin/tokens/${encodeURIComponent(deviceId)}/rotate`, {
+        method: 'POST', headers: headers(true), body: JSON.stringify(payload)
+      });
+      setOutput(data);
+      await refreshAll();
+    }
+
+    async function rotateTokenFor(deviceId, issuedTo) {
+      const payload = { issued_to: issuedTo || null };
+      const data = await req(`/admin/tokens/${encodeURIComponent(deviceId)}/rotate`, {
+        method: 'POST', headers: headers(true), body: JSON.stringify(payload)
+      });
+      document.getElementById('deviceId').value = deviceId;
+      document.getElementById('issuedTo').value = issuedTo || '';
+      setOutput(data);
+      await refreshAll();
+    }
+
+    async function revokeToken() {
+      const deviceId = document.getElementById('deviceId').value.trim();
+      const data = await req(`/admin/tokens/${encodeURIComponent(deviceId)}/revoke`, {
+        method: 'POST', headers: headers(false)
+      });
+      setOutput(data);
+      await refreshAll();
+    }
+
+    async function deleteToken(deviceId) {
+      if (!confirm(`Удалить токен для устройства ${deviceId}?`)) return;
+      const data = await req(`/admin/tokens/${encodeURIComponent(deviceId)}`, {
+        method: 'DELETE', headers: headers(false)
+      });
+      document.getElementById('deviceId').value = deviceId;
+      setOutput(data);
+      await refreshAll();
+    }
+
+    function parsePorts(value) {
+      return String(value || '')
+        .split(',')
+        .map(x => Number(String(x).trim()))
+        .filter(x => Number.isInteger(x) && x > 0 && x <= 65535);
+    }
+
+    async function allowIpRule() {
+      const ip = document.getElementById('allowIp').value.trim();
+      const ports = parsePorts(document.getElementById('allowPorts').value);
+      const data = await req('/admin/network/allow-ip', {
+        method: 'POST', headers: headers(true), body: JSON.stringify({ ip, ports })
+      });
+      setOutput(data);
+      await refreshAll();
+    }
+
+    async function revokeIpRule() {
+      const ip = document.getElementById('allowIp').value.trim();
+      const ports = parsePorts(document.getElementById('allowPorts').value);
+      const data = await req('/admin/network/revoke-ip', {
+        method: 'POST', headers: headers(true), body: JSON.stringify({ ip, ports })
+      });
+      setOutput(data);
+      await refreshAll();
+    }
+
+    async function loadNetworkRules() {
+      const data = await req('/admin/network/rules', { headers: headers(false) });
+      const tbody = document.getElementById('networkBody');
+      tbody.innerHTML = '';
+      for (const r of data.items || []) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${r.display_name || '-'}</td><td class="mono">${r.local_port || '-'}</td><td class="mono">${r.remote_address || '-'}</td><td>${r.enabled ? 'да' : 'нет'}</td>`;
+        tbody.appendChild(tr);
+      }
+      return data.items || [];
+    }
+
+    async function loadTokens() {
+      const data = await req('/admin/tokens', { headers: headers(false) });
+      const tbody = document.getElementById('tokensBody');
+      tbody.innerHTML = '';
+      for (const t of data.items || []) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td class="mono">${t.device_id || '-'}</td><td>${t.issued_to || '-'}</td><td>${fmt(t.created_at)}</td><td>${fmt(t.last_used_at)}</td><td>${fmt(t.revoked_at)}</td><td><div class="inline-actions"></div></td>`;
+        const actions = tr.querySelector('.inline-actions');
+
+        const rotateBtn = document.createElement('button');
+        rotateBtn.className = 'warn';
+        rotateBtn.textContent = 'Перевыдать';
+        rotateBtn.onclick = () => rotateTokenFor(t.device_id, t.issued_to || null);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'danger';
+        deleteBtn.textContent = 'Удалить';
+        deleteBtn.onclick = () => deleteToken(t.device_id);
+
+        actions.appendChild(rotateBtn);
+        actions.appendChild(deleteBtn);
+        tbody.appendChild(tr);
+      }
+      return data.items || [];
+    }
+
+    async function loadDevices() {
+      const data = await req('/admin/devices', { headers: headers(false) });
+      const tbody = document.getElementById('devicesBody');
+      tbody.innerHTML = '';
+      for (const d of data.items || []) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td class="mono">${d.device_id || '-'}</td><td class="mono">${d.public_ip || '-'}</td><td>${d.hostname || '-'}</td><td>${fmt(d.updated_at)}</td>`;
+        tbody.appendChild(tr);
+      }
+      return data.items || [];
+    }
+
+    async function loadAudit() {
+      const data = await req('/admin/audit?limit=100', { headers: headers(false) });
+      const tbody = document.getElementById('auditBody');
+      tbody.innerHTML = '';
+      for (const a of data.items || []) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${a.id}</td><td>${a.event_type || '-'}</td><td class="mono">${a.device_id || '-'}</td><td>${a.actor || '-'}</td><td>${a.details || '-'}</td><td>${fmt(a.created_at)}</td>`;
+        tbody.appendChild(tr);
+      }
+      return data.items || [];
+    }
+
+    async function refreshAll() {
+      try {
+        const [tokens, devices] = await Promise.all([loadTokens(), loadDevices()]);
+        await loadNetworkRules();
+        await loadAudit();
+        document.getElementById('sTokens').textContent = tokens.length;
+        document.getElementById('sDevices').textContent = devices.length;
+        document.getElementById('sActive').textContent = tokens.filter(t => !t.revoked_at).length;
+        document.getElementById('sRevoked').textContent = tokens.filter(t => !!t.revoked_at).length;
+        liveInfoEl.textContent = `Автообновление: каждые 15 сек | Обновлено: ${new Date().toLocaleTimeString('ru-RU')}`;
+      } catch (e) {
+        setOutput(`Ошибка обновления: ${e.message}`);
+        liveInfoEl.textContent = 'Автообновление: ошибка авторизации или сети';
+      }
+    }
+
+    function startAutoRefresh() {
+      if (autoRefreshId) clearInterval(autoRefreshId);
+      autoRefreshId = setInterval(refreshAll, AUTO_REFRESH_MS);
+    }
+
+    startAutoRefresh();
+    refreshAll();
+  </script>
+</body>
+</html>

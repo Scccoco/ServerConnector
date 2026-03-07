@@ -1,0 +1,26 @@
+{
+  "api_bind": "0.0.0.0",
+  "api_port": 8080,
+  "admin_username": "admin",
+  "admin_password": "replace-with-strong-admin-password",
+  "admin_session_secret": "replace-with-random-session-secret",
+  "admin_session_cookie_secure": "auto",
+  "admin_api_key": "replace-with-strong-admin-key",
+  "managed_ports": [3389, 1238, 445],
+  "allowed_stale_minutes": 15,
+  "default_heartbeat_seconds": 60,
+  "update_manifest_url": "https://server.structura-most.ru/updates/latest.json",
+  "github_updates_repo": "",
+  "github_updates_asset_name": "Connector.Desktop.Setup.msi",
+  "github_updates_cache_seconds": 300,
+  "github_updates_fallback_local_manifest": true,
+  "github_updates_token": "",
+  "token_export_dir": "\\\\62.113.36.107\\BIM_Models\\Tokens",
+  "smb_server_host": "62.113.36.107",
+  "smb_share_name": "BIM_Models",
+  "smb_share_path": "D:\\BIM_Models",
+  "smb_user_prefix": "bim_",
+  "devices": {
+    "user-laptop-1": "replace-with-strong-token"
+  }
+}
