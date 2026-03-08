@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private readonly HeartbeatClient _heartbeatClient = new(new HttpClient { Timeout = TimeSpan.FromSeconds(110) });
     private readonly UpdateService _updateService = new(new HttpClient { Timeout = TimeSpan.FromSeconds(40) });
     private readonly DispatcherTimer _timer = new();
+    private readonly DispatcherTimer _updateTimer = new();
     private readonly Forms.NotifyIcon _trayIcon;
 
     private AppSettings _settings = new();
@@ -31,18 +32,22 @@ public partial class MainWindow : Window
     private UpdateManifest? _pendingUpdate;
     private string? _downloadedInstallerPath;
     private bool _updateOfferShown;
+    private bool _updateCheckInProgress;
+    private static readonly TimeSpan UpdateCheckInterval = TimeSpan.FromMinutes(30);
 
     public MainWindow()
     {
         InitializeComponent();
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         _timer.Tick += Timer_Tick;
+        _updateTimer.Tick += UpdateTimer_Tick;
         Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
         StateChanged += MainWindow_StateChanged;
         _trayIcon = CreateTrayIcon();
         LoadSettingsToUi();
         UpdateRunStateUi();
+        UpdateActionButtonUi();
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -53,7 +58,9 @@ public partial class MainWindow : Window
         Topmost = false;
         AppendLog("При закрытии окно сворачивается в трей. Для полного выхода: иконка в трее -> Закрыть.");
         _ = TryAutoConnectAsync();
-        _ = CheckAndOfferUpdatesAsync();
+        _ = CheckUpdatesAsync(showDialogs: false);
+        _updateTimer.Interval = UpdateCheckInterval;
+        _updateTimer.Start();
     }
 
     private async Task CheckAndOfferUpdatesAsync()
@@ -196,8 +203,27 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
+        _updateTimer.Stop();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
+    }
+
+    private async void UpdateTimer_Tick(object? sender, EventArgs e)
+    {
+        await CheckUpdatesAsync(showDialogs: false);
+    }
+
+    private void UpdateActionButtonUi()
+    {
+        if (_pendingUpdate is null)
+        {
+            UpdateActionButton.Content = "Проверить обновление";
+            UpdateActionButton.Style = (Style)FindResource("SecondaryButton");
+            return;
+        }
+
+        UpdateActionButton.Content = "Скачать и установить";
+        UpdateActionButton.Style = (Style)FindResource("PrimaryButton");
     }
 
     private void HideToTray()
@@ -224,6 +250,7 @@ public partial class MainWindow : Window
     {
         _allowClose = true;
         _timer.Stop();
+        _updateTimer.Stop();
         _isRunning = false;
         Close();
     }
@@ -565,12 +592,18 @@ public partial class MainWindow : Window
 
     private async Task CheckUpdatesAsync(bool showDialogs)
     {
+        if (_updateCheckInProgress)
+        {
+            return;
+        }
+
+        _updateCheckInProgress = true;
+        UpdateActionButton.IsEnabled = false;
         try
         {
             var manifestUrl = string.IsNullOrWhiteSpace(_settings.UpdateManifestUrl)
                 ? FixedUpdateManifestUrl
                 : _settings.UpdateManifestUrl.Trim();
-            AppendLog("Проверка обновлений: " + manifestUrl);
             if (!Uri.TryCreate(manifestUrl, UriKind.Absolute, out _))
             {
                 throw new InvalidOperationException("Введите корректный URL manifest обновлений.");
@@ -584,9 +617,8 @@ public partial class MainWindow : Window
             if (manifest is null)
             {
                 _pendingUpdate = null;
-                InstallUpdateButton.IsEnabled = false;
                 UpdateStateTextBlock.Text = "Обновление: не удалось получить manifest";
-                AppendLog("Обновление: manifest недоступен");
+                UpdateActionButtonUi();
                 if (showDialogs)
                 {
                     System.Windows.MessageBox.Show("Не удалось проверить обновления.", "Обновления", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -597,9 +629,9 @@ public partial class MainWindow : Window
             if (_updateService.IsUpdateAvailable(manifest))
             {
                 _pendingUpdate = manifest;
-                InstallUpdateButton.IsEnabled = true;
                 UpdateStateTextBlock.Text = $"Доступно обновление: {manifest.Version}";
                 AppendLog("Найдено обновление: " + manifest.Version);
+                UpdateActionButtonUi();
                 if (showDialogs)
                 {
                     System.Windows.MessageBox.Show(
@@ -613,9 +645,8 @@ public partial class MainWindow : Window
             else
             {
                 _pendingUpdate = null;
-                InstallUpdateButton.IsEnabled = false;
                 UpdateStateTextBlock.Text = $"Обновление: актуально ({_updateService.CurrentVersion})";
-                AppendLog("Обновление актуально: " + _updateService.CurrentVersion);
+                UpdateActionButtonUi();
                 if (showDialogs)
                 {
                     System.Windows.MessageBox.Show("Установлена актуальная версия.", "Обновления", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -625,22 +656,33 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _pendingUpdate = null;
-            InstallUpdateButton.IsEnabled = false;
             UpdateStateTextBlock.Text = "Обновление: ошибка проверки";
             AppendLog("Ошибка проверки обновления: " + ex.Message);
+            UpdateActionButtonUi();
             if (showDialogs)
             {
                 System.Windows.MessageBox.Show(ex.Message, "Ошибка обновлений", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
+        finally
+        {
+            _updateCheckInProgress = false;
+            UpdateActionButton.IsEnabled = true;
+        }
     }
 
-    private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
+    private async void UpdateAction_Click(object sender, RoutedEventArgs e)
     {
-        await CheckUpdatesAsync(showDialogs: true);
+        if (_pendingUpdate is null)
+        {
+            await CheckUpdatesAsync(showDialogs: true);
+            return;
+        }
+
+        await InstallPendingUpdateAsync();
     }
 
-    private async void InstallUpdate_Click(object sender, RoutedEventArgs e)
+    private async Task InstallPendingUpdateAsync()
     {
         try
         {
@@ -653,7 +695,7 @@ public partial class MainWindow : Window
                 }
             }
 
-            InstallUpdateButton.IsEnabled = false;
+            UpdateActionButton.IsEnabled = false;
             UpdateStateTextBlock.Text = "Обновление: загрузка установщика...";
             _downloadedInstallerPath = await _updateService.DownloadInstallerAsync(_pendingUpdate, CancellationToken.None);
             AppendLog("Скачан установщик обновления: " + _downloadedInstallerPath);
@@ -672,12 +714,12 @@ public partial class MainWindow : Window
             else
             {
                 UpdateStateTextBlock.Text = "Обновление: установщик скачан";
-                InstallUpdateButton.IsEnabled = true;
+                UpdateActionButton.IsEnabled = true;
             }
         }
         catch (Exception ex)
         {
-            InstallUpdateButton.IsEnabled = _pendingUpdate is not null;
+            UpdateActionButton.IsEnabled = _pendingUpdate is not null;
             UpdateStateTextBlock.Text = "Обновление: ошибка установки";
             AppendLog("Ошибка установки обновления: " + ex.Message);
             System.Windows.MessageBox.Show(ex.Message, "Ошибка обновления", MessageBoxButton.OK, MessageBoxImage.Error);

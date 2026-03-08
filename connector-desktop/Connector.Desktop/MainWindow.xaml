@@ -166,7 +166,7 @@
                 <Grid Grid.Row="1">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="0" />
+                        <ColumnDefinition Width="0.9*" />
                     </Grid.ColumnDefinitions>
 
                 <Border Grid.Column="0" Style="{StaticResource CardStyle}">
@@ -259,20 +259,20 @@
 
                 <Border Grid.Column="1" Style="{StaticResource CardStyle}" Margin="0,0,0,12">
                     <StackPanel>
-                        <TextBlock Text="Доступ к BIM_Models" FontSize="19" FontWeight="SemiBold" />
-                        <TextBlock Text="Рабочие данные для SMB и управление обновлением приложения."
+                        <TextBlock Text="Обновления приложения" FontSize="19" FontWeight="SemiBold" />
+                        <TextBlock Text="Проверка и установка новой версии Structura Connector."
                                    Margin="0,6,0,12" Foreground="#A9BBD3" TextWrapping="Wrap" />
 
-                        <Label Content="Логин SMB" />
-                        <TextBox x:Name="SmbLoginTextBox" Margin="0,0,0,10" />
+                        <Label Content="Логин SMB" Visibility="Collapsed" />
+                        <TextBox x:Name="SmbLoginTextBox" Margin="0,0,0,10" Visibility="Collapsed" />
 
-                        <Label Content="Пароль SMB" />
-                        <PasswordBox x:Name="SmbPasswordBox" Margin="0,0,0,10" />
+                        <Label Content="Пароль SMB" Visibility="Collapsed" />
+                        <PasswordBox x:Name="SmbPasswordBox" Margin="0,0,0,10" Visibility="Collapsed" />
 
-                        <Label Content="Путь папки" />
-                        <TextBox x:Name="SmbSharePathTextBox" Margin="0,0,0,12" />
+                        <Label Content="Путь папки" Visibility="Collapsed" />
+                        <TextBox x:Name="SmbSharePathTextBox" Margin="0,0,0,12" Visibility="Collapsed" />
 
-                        <WrapPanel>
+                        <WrapPanel Visibility="Collapsed">
                             <Button x:Name="ConnectSmbButton" Style="{StaticResource PrimaryButton}" Content="Войти в SMB-папку" Click="ConnectSmb_Click" />
                             <Button x:Name="OpenSmbFolderButton" Style="{StaticResource SecondaryButton}" Content="Открыть BIM_Models" Click="OpenSmbFolder_Click" />
                         </WrapPanel>
@@ -280,13 +280,12 @@
                         <Separator Margin="0,8,0,10" Background="#2A3E5C" />
 
                         <TextBlock Text="Обновления" FontSize="17" FontWeight="SemiBold" />
-                        <Label Content="URL manifest" />
-                        <TextBox x:Name="UpdateManifestUrlTextBox" Margin="0,0,0,8" />
+                        <Label Content="URL manifest" Visibility="Collapsed" />
+                        <TextBox x:Name="UpdateManifestUrlTextBox" Margin="0,0,0,8" Visibility="Collapsed" />
                         <TextBlock x:Name="UpdateStateTextBlock" Text="Обновление: не проверялось" Foreground="#A9BBD3" Margin="0,0,0,12" TextWrapping="Wrap" />
 
                         <WrapPanel>
-                            <Button x:Name="CheckUpdatesButton" Style="{StaticResource SecondaryButton}" Content="Проверить" Click="CheckUpdates_Click" />
-                            <Button x:Name="InstallUpdateButton" Style="{StaticResource PrimaryButton}" Content="Скачать и установить" Click="InstallUpdate_Click" IsEnabled="False" />
+                            <Button x:Name="UpdateActionButton" Style="{StaticResource SecondaryButton}" Content="Проверить обновление" Click="UpdateAction_Click" />
                         </WrapPanel>
                     </StackPanel>
                 </Border>
