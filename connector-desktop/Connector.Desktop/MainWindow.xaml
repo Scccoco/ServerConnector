@@ -257,7 +257,7 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Column="1" Style="{StaticResource CardStyle}" Margin="0,0,0,12" Visibility="Collapsed">
+                <Border Grid.Column="1" Style="{StaticResource CardStyle}" Margin="0,0,0,12">
                     <StackPanel>
                         <TextBlock Text="Доступ к BIM_Models" FontSize="19" FontWeight="SemiBold" />
                         <TextBlock Text="Рабочие данные для SMB и управление обновлением приложения."

@@ -570,6 +570,7 @@ public partial class MainWindow : Window
             var manifestUrl = string.IsNullOrWhiteSpace(_settings.UpdateManifestUrl)
                 ? FixedUpdateManifestUrl
                 : _settings.UpdateManifestUrl.Trim();
+            AppendLog("Проверка обновлений: " + manifestUrl);
             if (!Uri.TryCreate(manifestUrl, UriKind.Absolute, out _))
             {
                 throw new InvalidOperationException("Введите корректный URL manifest обновлений.");
@@ -585,6 +586,7 @@ public partial class MainWindow : Window
                 _pendingUpdate = null;
                 InstallUpdateButton.IsEnabled = false;
                 UpdateStateTextBlock.Text = "Обновление: не удалось получить manifest";
+                AppendLog("Обновление: manifest недоступен");
                 if (showDialogs)
                 {
                     System.Windows.MessageBox.Show("Не удалось проверить обновления.", "Обновления", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -613,6 +615,7 @@ public partial class MainWindow : Window
                 _pendingUpdate = null;
                 InstallUpdateButton.IsEnabled = false;
                 UpdateStateTextBlock.Text = $"Обновление: актуально ({_updateService.CurrentVersion})";
+                AppendLog("Обновление актуально: " + _updateService.CurrentVersion);
                 if (showDialogs)
                 {
                     System.Windows.MessageBox.Show("Установлена актуальная версия.", "Обновления", MessageBoxButton.OK, MessageBoxImage.Information);
