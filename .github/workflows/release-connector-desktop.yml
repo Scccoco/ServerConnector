@@ -82,12 +82,16 @@ jobs:
           files: connector-desktop/artifacts/Connector.Desktop.Setup.msi
 
       - name: Refresh server updates manifest cache
-        if: ${{ secrets.CONNECTOR_UPDATES_REFRESH_URL != '' && secrets.CONNECTOR_ADMIN_API_KEY != '' }}
         shell: pwsh
         env:
           REFRESH_URL: ${{ secrets.CONNECTOR_UPDATES_REFRESH_URL }}
           ADMIN_KEY: ${{ secrets.CONNECTOR_ADMIN_API_KEY }}
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:REFRESH_URL) -or [string]::IsNullOrWhiteSpace($env:ADMIN_KEY)) {
+            Write-Host "Refresh skipped: CONNECTOR_UPDATES_REFRESH_URL or CONNECTOR_ADMIN_API_KEY is not set"
+            exit 0
+          }
+
           $headers = @{
             "X-Admin-Key" = $env:ADMIN_KEY
             "X-Admin-Actor" = "github-release-bot"
