@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Net;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -22,6 +23,28 @@ public sealed class HeartbeatClient
     public HeartbeatClient(HttpClient http)
     {
         _http = http;
+    }
+
+    private static string CurrentAgentVersion => FormatVersion(Assembly.GetExecutingAssembly().GetName().Version);
+
+    private static string FormatVersion(Version? version)
+    {
+        if (version is null)
+        {
+            return "1.0.0";
+        }
+
+        if (version.Build < 0)
+        {
+            return $"{version.Major}.{version.Minor}";
+        }
+
+        if (version.Revision <= 0)
+        {
+            return $"{version.Major}.{version.Minor}.{Math.Max(version.Build, 0)}";
+        }
+
+        return version.ToString();
     }
 
     public async Task<string> ResolvePublicIpAsync(CancellationToken ct)
@@ -93,7 +116,9 @@ public sealed class HeartbeatClient
         {
             device_id = deviceId,
             hostname = Environment.MachineName,
-            agent_version = "1.0.0",
+            agent_version = CurrentAgentVersion,
+            tekla_installed_version = teklaState?.InstalledVersion,
+            tekla_target_version = teklaState?.TargetVersion,
             tekla_installed_revision = teklaState?.InstalledRevision,
             tekla_target_revision = teklaState?.TargetRevision,
             tekla_pending_after_close = teklaState?.PendingAfterClose,
@@ -129,7 +154,7 @@ public sealed class HeartbeatClient
         var payload = new
         {
             hostname = Environment.MachineName,
-            agent_version = "desktop-1.0.0"
+            agent_version = CurrentAgentVersion
         };
 
         var json = JsonSerializer.Serialize(payload);
@@ -269,6 +294,8 @@ public sealed class HeartbeatClient
 
 public sealed class TeklaHeartbeatState
 {
+    public string InstalledVersion { get; set; } = "";
+    public string TargetVersion { get; set; } = "";
     public string InstalledRevision { get; set; } = "";
     public string TargetRevision { get; set; } = "";
     public bool PendingAfterClose { get; set; }

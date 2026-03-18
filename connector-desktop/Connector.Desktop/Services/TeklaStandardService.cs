@@ -94,6 +94,7 @@ public sealed class TeklaStandardService
 
         return new TeklaStandardManifest
         {
+            Version = GetString(root, "version")?.Trim() ?? string.Empty,
             Revision = revision.Trim(),
             Notes = GetString(root, "notes") ?? string.Empty,
             RepoUrl = GetString(root, "repo_url") ?? string.Empty,
@@ -315,6 +316,7 @@ public sealed class TeklaStandardService
 
 public sealed class TeklaStandardManifest
 {
+    public string Version { get; set; } = "";
     public string Revision { get; set; } = "";
     public string Notes { get; set; } = "";
     public string RepoUrl { get; set; } = "";

@@ -593,6 +593,8 @@ public partial class MainWindow : Window
             var token = SettingsService.DecryptToken(_settings.TokenCipherBase64);
             var teklaState = new TeklaHeartbeatState
             {
+                InstalledVersion = _settings.TeklaStandardInstalledVersion,
+                TargetVersion = _settings.TeklaStandardTargetVersion,
                 InstalledRevision = _settings.TeklaStandardInstalledRevision,
                 TargetRevision = _settings.TeklaStandardTargetRevision,
                 PendingAfterClose = false,
@@ -1036,6 +1038,7 @@ public partial class MainWindow : Window
 
             if (manifest is null)
             {
+                _settings.TeklaStandardTargetVersion = string.Empty;
                 _settings.TeklaStandardTargetRevision = string.Empty;
                 _settings.TeklaStandardLastError = "manifest_not_received";
                 TeklaStatusTextBlock.Text = "Стандарт Tekla: данные обновления недоступны";
@@ -1048,6 +1051,7 @@ public partial class MainWindow : Window
                 return;
             }
 
+            _settings.TeklaStandardTargetVersion = manifest.Version;
             _settings.TeklaStandardTargetRevision = manifest.Revision;
             _settings.TeklaStandardRepoUrl = manifest.RepoUrl;
             _settings.TeklaStandardRepoRef = manifest.RepoRef;
@@ -1132,6 +1136,7 @@ public partial class MainWindow : Window
                 AppendLog(result.Message);
                 _teklaBalloonShown = false;
                 _settings.TeklaStandardLastError = string.Empty;
+                _settings.TeklaStandardInstalledVersion = _settings.TeklaStandardTargetVersion;
                 TeklaStatusTextBlock.Text = "Стандарт Tekla: применена ревизия " + _settings.TeklaStandardInstalledRevision;
                 _settingsService.Save(_settings);
                 UpdateTeklaUi();

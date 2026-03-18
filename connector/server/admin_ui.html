@@ -463,7 +463,9 @@
 
         const tokenState = t.revoked_at ? statusBadge('Отозван', 'danger') : statusBadge('Активен', 'ok');
         const firmState = t.is_firm_admin ? statusBadge('Назначен', 'ok') : statusBadge('Нет', 'warn');
-        const teklaRuntime = `${safe(t.tekla_installed_revision || '-') } / ${safe(t.tekla_target_revision || '-')}`;
+        const connectorVersion = (t.agent_version || '').trim() || '-';
+        const teklaVersion = `${safe(t.tekla_installed_version || '-') } / ${safe(t.tekla_target_version || '-')}`;
+        const teklaRevision = `${safe(t.tekla_installed_revision || '-') } / ${safe(t.tekla_target_revision || '-')}`;
         const smbBlock = `
           <div class="secret-box mono">
             <div>login: ${safe(t.smb_login)}</div>
@@ -472,6 +474,7 @@
             <div>${safe(t.smb_share_unc)}</div>
           </div>`;
 
+        const deviceIdValue = (t.device_id || '').trim();
         const deviceTitle = deviceIdValue || '<пустой device_id>';
 
         tr.innerHTML = `
@@ -489,7 +492,7 @@
           <td>${smbBlock}</td>
           <td>
             <div>${tokenState}</div>
-            <div class="muted-small">агент: ${safe(t.agent_version)}</div>
+            <div class="muted-small">connector: ${safe(connectorVersion)}</div>
             <div class="muted-small">heartbeat: ${fmt(t.device_updated_at)}</div>
           </td>
           <td>
@@ -497,14 +500,14 @@
             <div class="muted-small">${t.is_system_admin ? 'system admin' : 'обычный admin'}</div>
           </td>
           <td>
-            <div class="mono">${teklaRuntime}</div>
+            <div class="muted-small">version: <span class="mono">${teklaVersion}</span></div>
+            <div class="muted-small">revision: <span class="mono">${teklaRevision}</span></div>
             <div class="muted-small">обновлено: ${fmt(t.tekla_updated_at)}</div>
             <div class="muted-small">ошибка: ${safe(t.tekla_last_error || '-')}</div>
           </td>
           <td><div class="inline-actions"></div></td>`;
 
         const actions = tr.querySelector('.inline-actions');
-        const deviceIdValue = (t.device_id || '').trim();
 
         const rotateBtn = document.createElement('button');
         rotateBtn.className = 'warn';

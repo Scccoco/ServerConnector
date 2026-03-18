@@ -13,6 +13,8 @@ public sealed class AppSettings
     public bool AutoStart { get; set; } = true;
     public string TeklaStandardManifestUrl { get; set; } = "https://server.structura-most.ru/updates/tekla/firm/latest.json";
     public string TeklaStandardLocalPath { get; set; } = @"C:\Company\TeklaFirm";
+    public string TeklaStandardInstalledVersion { get; set; } = "";
+    public string TeklaStandardTargetVersion { get; set; } = "";
     public string TeklaStandardInstalledRevision { get; set; } = "";
     public string TeklaStandardTargetRevision { get; set; } = "";
     public DateTimeOffset? TeklaStandardLastCheckUtc { get; set; }

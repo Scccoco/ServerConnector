@@ -53,6 +53,8 @@ class Heartbeat(BaseModel):
     public_ip: str | None = None
     hostname: str | None = None
     agent_version: str | None = None
+    tekla_installed_version: str | None = None
+    tekla_target_version: str | None = None
     tekla_installed_revision: str | None = None
     tekla_target_revision: str | None = None
     tekla_pending_after_close: bool | None = None
@@ -162,6 +164,8 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS tekla_client_state (
                 device_id TEXT PRIMARY KEY,
+                installed_version TEXT,
+                target_version TEXT,
                 installed_revision TEXT,
                 target_revision TEXT,
                 pending_after_close INTEGER,
@@ -178,6 +182,10 @@ def init_db() -> None:
             row[1]
             for row in conn.execute("PRAGMA table_info(tekla_client_state)").fetchall()
         }
+        if "installed_version" not in columns:
+            conn.execute("ALTER TABLE tekla_client_state ADD COLUMN installed_version TEXT")
+        if "target_version" not in columns:
+            conn.execute("ALTER TABLE tekla_client_state ADD COLUMN target_version TEXT")
         if "last_error" not in columns:
             conn.execute("ALTER TABLE tekla_client_state ADD COLUMN last_error TEXT")
 
@@ -292,6 +300,8 @@ def upsert_heartbeat(payload: Heartbeat) -> None:
 def upsert_tekla_client_state(payload: Heartbeat) -> None:
     has_any = any(
         [
+            payload.tekla_installed_version is not None,
+            payload.tekla_target_version is not None,
             payload.tekla_installed_revision is not None,
             payload.tekla_target_revision is not None,
             payload.tekla_pending_after_close is not None,
@@ -304,6 +314,8 @@ def upsert_tekla_client_state(payload: Heartbeat) -> None:
     if not has_any:
         return
 
+    installed_version = (payload.tekla_installed_version or "").strip()
+    target_version = (payload.tekla_target_version or "").strip()
     installed_revision = (payload.tekla_installed_revision or "").strip()
     target_revision = (payload.tekla_target_revision or "").strip()
     pending_after_close = 1 if payload.tekla_pending_after_close else 0
@@ -315,7 +327,7 @@ def upsert_tekla_client_state(payload: Heartbeat) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         prev = conn.execute(
             """
-            SELECT installed_revision, target_revision, pending_after_close, tekla_running,
+            SELECT installed_version, target_version, installed_revision, target_revision, pending_after_close, tekla_running,
                    last_check_utc, last_success_utc, last_error
             FROM tekla_client_state
             WHERE device_id = ?
@@ -327,6 +339,8 @@ def upsert_tekla_client_state(payload: Heartbeat) -> None:
             """
             INSERT INTO tekla_client_state(
                 device_id,
+                installed_version,
+                target_version,
                 installed_revision,
                 target_revision,
                 pending_after_close,
@@ -336,8 +350,10 @@ def upsert_tekla_client_state(payload: Heartbeat) -> None:
                 last_error,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(device_id) DO UPDATE SET
+                installed_version=excluded.installed_version,
+                target_version=excluded.target_version,
                 installed_revision=excluded.installed_revision,
                 target_revision=excluded.target_revision,
                 pending_after_close=excluded.pending_after_close,
@@ -349,6 +365,8 @@ def upsert_tekla_client_state(payload: Heartbeat) -> None:
             """,
             (
                 payload.device_id,
+                installed_version,
+                target_version,
                 installed_revision,
                 target_revision,
                 pending_after_close,
@@ -361,6 +379,8 @@ def upsert_tekla_client_state(payload: Heartbeat) -> None:
         )
 
     current = (
+        installed_version,
+        target_version,
         installed_revision,
         target_revision,
         pending_after_close,
@@ -375,6 +395,7 @@ def upsert_tekla_client_state(payload: Heartbeat) -> None:
             device_id=payload.device_id,
             actor=payload.device_id,
             details=(
+                f"installed_version={installed_version}; target_version={target_version}; "
                 f"installed={installed_revision}; target={target_revision}; "
                 f"pending={pending_after_close}; running={tekla_running}; "
                 f"last_error={last_error}"
@@ -2108,6 +2129,8 @@ def admin_list_tokens(request: Request, x_admin_key: str | None = Header(default
                    d.updated_at,
                    r.is_system_admin,
                    r.is_firm_admin,
+                   s.installed_version,
+                   s.target_version,
                    s.installed_revision,
                    s.target_revision,
                    s.last_error,
@@ -2141,10 +2164,12 @@ def admin_list_tokens(request: Request, x_admin_key: str | None = Header(default
                 "device_updated_at": r[14],
                 "is_system_admin": bool(r[15]),
                 "is_firm_admin": bool(r[16]),
-                "tekla_installed_revision": r[17],
-                "tekla_target_revision": r[18],
-                "tekla_last_error": r[19],
-                "tekla_updated_at": r[20],
+                "tekla_installed_version": r[17],
+                "tekla_target_version": r[18],
+                "tekla_installed_revision": r[19],
+                "tekla_target_revision": r[20],
+                "tekla_last_error": r[21],
+                "tekla_updated_at": r[22],
             }
         )
     return {"items": items}
@@ -2280,6 +2305,8 @@ def admin_tekla_clients(request: Request, x_admin_key: str | None = Header(defau
         rows = conn.execute(
             """
             SELECT t.device_id,
+                   t.installed_version,
+                   t.target_version,
                    t.installed_revision,
                    t.target_revision,
                    t.pending_after_close,
@@ -2302,17 +2329,19 @@ def admin_tekla_clients(request: Request, x_admin_key: str | None = Header(defau
         "items": [
             {
                 "device_id": r[0],
-                "installed_revision": r[1],
-                "target_revision": r[2],
-                "pending_after_close": bool(r[3]),
-                "tekla_running": bool(r[4]),
-                "last_check_utc": r[5],
-                "last_success_utc": r[6],
-                "last_error": r[7],
-                "updated_at": r[8],
-                "hostname": r[9],
-                "public_ip": r[10],
-                "issued_to": r[11],
+                "installed_version": r[1],
+                "target_version": r[2],
+                "installed_revision": r[3],
+                "target_revision": r[4],
+                "pending_after_close": bool(r[5]),
+                "tekla_running": bool(r[6]),
+                "last_check_utc": r[7],
+                "last_success_utc": r[8],
+                "last_error": r[9],
+                "updated_at": r[10],
+                "hostname": r[11],
+                "public_ip": r[12],
+                "issued_to": r[13],
             }
             for r in rows
         ]
