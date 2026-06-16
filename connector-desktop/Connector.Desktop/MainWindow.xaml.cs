@@ -7,18 +7,23 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Threading;
+using Connector.Desktop.Features.Connector;
+using Connector.Desktop.Features.Tekla.Standard;
 using Connector.Desktop.Models;
 using Connector.Desktop.Services;
 using Forms = System.Windows.Forms;
 
 namespace Connector.Desktop;
 
-public partial class MainWindow : Window
+public partial class MainWindow : Window, IShellHost, IConnectorHost
 {
     private const string FixedServerUrl = "https://server.structura-most.ru";
     private const string FixedUpdateManifestUrl = "https://server.structura-most.ru/updates/latest.json";
     private const int FixedHeartbeatSeconds = 60;
     private const string DefaultSmbSharePath = @"\\62.113.36.107\BIM_Models";
+    // Tekla defaults: still used by the shell-owned settings bootstrap/persistence (LoadSettingsToUi, ReadSettingsFromUi,
+    // ConnectByTokenInternalAsync). The lifted StandardView keeps its own private copies for its UI; these stay here
+    // because the connector's settings layer references them independently of the Стандарт module.
     private const string FixedTeklaStandardManifestUrl = "https://server.structura-most.ru/updates/tekla/firm/latest.json";
     private const string FixedTeklaExtensionsManifestUrl = "https://server.structura-most.ru/updates/tekla/extensions/latest.json";
     private const string FixedTeklaLibrariesManifestUrl = "https://server.structura-most.ru/updates/tekla/libraries/latest.json";
@@ -37,12 +42,13 @@ public partial class MainWindow : Window
     private readonly HeartbeatClient _heartbeatClient = new(new HttpClient { Timeout = TimeSpan.FromSeconds(110) });
     private readonly UpdateService _updateService = new(new HttpClient { Timeout = TimeSpan.FromSeconds(40) });
     private readonly TeklaStandardService _teklaStandardService = new(new HttpClient { Timeout = TimeSpan.FromSeconds(25) });
-    private readonly ModelSharingProvisioningService _modelSharingService = new();
-    private readonly VpnProvisioningService _vpnService = new();
+    // Model Sharing / VPN services now live inside their feature modules (the shell catalog). See ComposeFeatureModules().
+    private readonly Shell.ShellViewModel _shell;   // modular feature catalog (domains → modules); assigned in ctor (needs `this` as IShellHost)
+    private StandardModule? _standard;   // Tekla domain → "Стандарт" module (the lifted firm/extensions/libraries sync engine)
+    private ConnectorModule? _connector;   // "Коннектор" domain module (the lifted login/heartbeat FRONT-END view); engine stays here
     private string _lastVpnConfig = string.Empty;   // last config delivered by bootstrap (kept in memory, not persisted)
     private string _lastSmbLogin = string.Empty;    // SMB creds from bootstrap, for mounting the share over VPN
     private string _lastSmbPassword = string.Empty;
-    private const string VpnTunnel = "structura-vpn";
     private readonly DispatcherTimer _timer = new();
     private readonly DispatcherTimer _updateTimer = new();
     private readonly DispatcherTimer _teklaSyncTimer = new();
@@ -204,39 +210,18 @@ public partial class MainWindow : Window
     private bool _updateOfferShown;
     private string _lastUpdateToastVersion = string.Empty;
     private bool _updateCheckInProgress;
-    private bool _teklaCheckInProgress;
-    private bool _teklaBalloonShown;
+    private bool _teklaCheckInProgress;   // seam backing store for IShellHost.TeklaCheckInProgress (read by connect flow)
+    private bool _teklaBalloonShown;      // seam backing store; reset via IShellHost.ResetTeklaPendingBalloon
     private bool _serverConnectionFailed;
-    private string _lastTeklaSyncErrorNotice = string.Empty;
     private static readonly TimeSpan UpdateCheckInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan TeklaSyncCheckInterval = TimeSpan.FromMinutes(2);
-
-    private sealed class TeklaManagedTargetState
-    {
-        public string Key { get; init; } = "";
-        public string DisplayName { get; init; } = "";
-        public string ManifestUrl { get; set; } = "";
-        public string LocalPath { get; set; } = "";
-        public string InstalledVersion { get; set; } = "";
-        public string TargetVersion { get; set; } = "";
-        public string InstalledRevision { get; set; } = "";
-        public string TargetRevision { get; set; } = "";
-        public DateTimeOffset? LastCheckUtc { get; set; }
-        public DateTimeOffset? LastSuccessUtc { get; set; }
-        public bool PendingAfterClose { get; set; }
-        public string LastError { get; set; } = "";
-        public string LastTechnicalError { get; set; } = "";
-        public string RepoUrl { get; set; } = "";
-        public string RepoRef { get; set; } = "";
-        public string RepoSubdir { get; set; } = "";
-        public TeklaManagedSyncMode SyncMode { get; init; }
-        public bool DelayWhenTeklaRunning { get; init; }
-    }
 
     public MainWindow()
     {
         InitializeComponent();
+        _shell = new Shell.ShellViewModel(this, this);   // `this` satisfies IShellHost + IConnectorHost; field initializers have already run.
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        ComposeFeatureModules();   // bind Tekla sub-tabs (TeklaTabs) + host Structura/VPN/Атрибуты module views + wire glue
         _timer.Tick += Timer_Tick;
         _updateTimer.Tick += UpdateTimer_Tick;
         _teklaSyncTimer.Tick += TeklaSyncTimer_Tick;
@@ -247,10 +232,212 @@ public partial class MainWindow : Window
         LoadSettingsToUi();
         UpdateRunStateUi();
         UpdateActionButtonUi();
-        UpdateTeklaUi();
-        UpdateModelSharingUi();
-        UpdateVpnUi();
+        _standard?.RefreshUi();
+        SyncFeatureModules();
         UpdateHeaderStatusUi();
+    }
+
+    // ===== IShellHost (seam for the lifted "Стандарт" module) =========================================
+    // Implements the surface the lifted StandardView calls. These map 1:1 onto the shell fields/methods the
+    // original MainWindow code touched directly, so the lifted logic stays behaviour-identical.
+
+    // LIVE getter — MainWindow reassigns _settings (ReadSettingsFromUi / ConnectByTokenInternalAsync), never cache.
+    AppSettings IShellHost.Settings => _settings;
+
+    void IShellHost.SaveSettings() => _settingsService.Save(_settings);
+
+    HeartbeatClient IShellHost.Heartbeat => _heartbeatClient;
+
+    void IShellHost.Log(string message) => AppendLog(message);
+
+    MessageBoxResult IShellHost.ShowDialog(string message, string title, MessageBoxButton buttons, MessageBoxImage image) =>
+        ThemedDialogs.Show(this, message, title, buttons, image);
+
+    Window IShellHost.OwnerWindow => this;
+
+    bool IShellHost.TeklaCheckInProgress
+    {
+        get => _teklaCheckInProgress;
+        set => _teklaCheckInProgress = value;
+    }
+
+    // Cross-tab mirror (Коннектор tab) + window header. The module computes the overall status and the action-button
+    // presentation and pushes them here at the end of every refresh; the shell applies them to the controls that no
+    // longer live in the StandardView (mirrors the old UpdateTeklaUi/UpdateTeklaActionButtonUi/UpdateHeaderStatusUi).
+    void IShellHost.OnTeklaStatusChanged(string overallText, System.Windows.Media.Brush overallBrush, string actionButtonContent, bool actionIsSyncStyle, bool inProgress)
+    {
+        // Cross-tab mirror (ConnectorTeklaSyncStatusTextBlock + ConnectorTeklaSyncButton) moved into ConnectorView;
+        // push it through the module. The window header (HeaderFirmStatusTextBlock) stays in the shell.
+        _connector?.SetTeklaMirror(overallText, overallBrush, actionButtonContent, actionIsSyncStyle);
+        HeaderFirmStatusTextBlock.Text = overallText;
+        HeaderFirmStatusTextBlock.Foreground = overallBrush;
+    }
+
+    void IShellHost.ShowTrayBalloon(int durationMs, string title, string message, bool isWarning) =>
+        _trayIcon.ShowBalloonTip(durationMs, title, message, isWarning ? Forms.ToolTipIcon.Warning : Forms.ToolTipIcon.Info);
+
+    bool IShellHost.IsWindowVisible => IsVisible && WindowState != WindowState.Minimized;
+
+    void IShellHost.ResetTeklaPendingBalloon() => _teklaBalloonShown = false;
+
+    // ===== IConnectorHost (seam for the lifted "Коннектор" front-end module) ===========================
+    // Implements the surface the moved ConnectorView handlers call. The connect/heartbeat ENGINE stays here and is
+    // unchanged; these map onto the SACRED engine entry points + the shell primitives the moved handlers touch.
+    // Explicit implementations forward to the existing (private) engine methods so their signatures stay untouched.
+
+    // The login/heartbeat SPINE — the moved ConnectByToken_Click calls this VERBATIM engine method.
+    Task IConnectorHost.ConnectByTokenAsync(string token, bool showSuccessDialog) =>
+        ConnectByTokenInternalAsync(token, showSuccessDialog);
+
+    // App self-update "check" path (UpdateAction_Click when no pending update).
+    Task IConnectorHost.CheckUpdatesAsync(bool showDialogs) => CheckUpdatesAsync(showDialogs);
+
+    // App self-update "install" path (UpdateAction_Click when an update is pending).
+    Task IConnectorHost.InstallPendingUpdateAsync(bool confirmBeforeRun) => InstallPendingUpdateAsync(confirmBeforeRun);
+
+    bool IConnectorHost.HasPendingUpdate => _pendingUpdate is not null;
+
+    // Tekla-mirror sync button — identical to the Стандарт-tab button (OperationProgressWindow + "already running").
+    Task IConnectorHost.RunTeklaInteractiveSyncAsync() =>
+        _standard is null ? Task.CompletedTask : _standard.RunInteractiveSyncAsync();
+
+    void IConnectorHost.Log(string message) => AppendLog(message);
+
+    MessageBoxResult IConnectorHost.ShowDialog(string message, string title, MessageBoxButton buttons, MessageBoxImage image) =>
+        ThemedDialogs.Show(this, message, title, buttons, image);
+
+    Window IConnectorHost.OwnerWindow => this;
+
+    void IConnectorHost.SetServerConnectionFailed(bool failed) => _serverConnectionFailed = failed;
+
+    void IConnectorHost.UpdateHeaderStatus() => UpdateHeaderStatusUi();
+
+    // LIVE getter — MainWindow reassigns _settings (ReadSettingsFromUi / ConnectByTokenInternalAsync), never cache.
+    AppSettings IConnectorHost.Settings => _settings;
+
+    IReadOnlyList<ReleaseNoteItem> IConnectorHost.ReleaseNotes => ReleaseNotes;
+
+    // (TeklaUpdateAction_Click moved into ConnectorView — the Коннектор-tab mirror button now lives in the module and
+    // routes through IConnectorHost.RunTeklaInteractiveSyncAsync.)
+
+    // ===== Feature-module composition (MVVM migration) =================================================
+    // The Model Sharing / Structura / VPN tabs now live in self-contained IFeatureModule views hosted from the
+    // shell catalog. ComposeFeatureModules() hosts those views once and wires the shell-owned glue (journal,
+    // persistence, themed dialogs, the SMB-mount helper). SyncFeatureModules() re-pushes the current settings
+    // snapshot into them — at load and after each token-connect — replacing the old per-tab UpdateXxxUi calls.
+
+    private void ComposeFeatureModules()
+    {
+        // Capture the Коннектор module + host its view BEFORE LoadSettingsToUi/UpdateRunStateUi/UpdateActionButtonUi
+        // (called later in the ctor) push state into it. The connect/heartbeat engine stays here and reaches the
+        // moved controls through this module's push methods (replacing the old direct control writes).
+        _connector = _shell.Connector.Module("Коннектор") as ConnectorModule;
+        ConnectorHost.Content = _connector?.View;
+
+        _standard = _shell.Tekla.Module("Стандарт") as StandardModule;
+        // Data-driven Tekla sub-nav: TeklaTabs renders one tab per Tekla module (Стандарт, Model Sharing, Патчинг)
+        // from this collection. Adding a Tekla module needs no XAML/host change — only ShellViewModel registration.
+        TeklaTabs.ItemsSource = _shell.Tekla.Modules;
+
+        if (_shell.Tekla.Module("Model Sharing") is Features.Tekla.ModelSharing.ModelSharingModule ms)
+        {
+            ms.Log = AppendLog;
+            // Window-owned themed dialogs (mirror VPN) instead of the module's default owner-less MessageBox.
+            ms.ConfirmHandler = msg =>
+                ThemedDialogs.Show(this, msg, "Model Sharing", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+            ms.ShowMessage = (msg, isError) =>
+                ThemedDialogs.Show(this, msg, "Model Sharing", MessageBoxButton.OK,
+                    isError ? MessageBoxImage.Warning : MessageBoxImage.Information);
+            // Persistence stays in the shell: the module hands back the applied values to save the ModelSharing* keys.
+            ms.OnProvisioned = info =>
+            {
+                _settings.ModelSharingTeklaBin = info.TeklaBin;
+                _settings.ModelSharingServerHost = info.ServerHost;
+                _settings.ModelSharingServerPort = info.ServerPort;
+                _settings.ModelSharingIdentityEmail = info.IdentityEmail;
+                _settings.ModelSharingLastAppliedUtc = info.AppliedUtc;
+                _settingsService.Save(_settings);
+            };
+        }
+
+        if (_shell.Structura.Module("Structura") is Features.Structura.StructuraModule st)
+        {
+            StructuraHost.Content = st.View;
+            st.Log = AppendLog;
+            st.Decrypt = SettingsService.DecryptToken;
+        }
+
+        if (_shell.Vpn.Module("Общая папка (VPN)") is Features.Vpn.VpnModule vpn)
+        {
+            VpnHost.Content = vpn.View;
+            vpn.Log = AppendLog;
+            vpn.DialogHandler = (msg, button, image) => ThemedDialogs.Show(this, msg, "VPN", button, image);
+            // The big SMB-mount helper + in-memory creds stay in the shell; the module only requests "open this UNC".
+            vpn.OpenShareHandler = OpenVpnShareAsync;
+        }
+
+        // Атрибуты: placeholder domain (no shell glue yet — pure roadmap view).
+        AttributesHost.Content = _shell.Attributes.Module("Атрибуты")?.View;
+    }
+
+    private void SyncFeatureModules()
+    {
+        if (_shell.Tekla.Module("Model Sharing") is Features.Tekla.ModelSharing.ModelSharingModule ms)
+        {
+            ms.Initialize(
+                new Features.Tekla.ModelSharing.ModelSharingIdentity(
+                    _settings.DeviceId, _settings.IssuedTo, !string.IsNullOrWhiteSpace(_settings.DeviceId)),
+                _settings.ModelSharingServerHost,
+                _settings.ModelSharingServerPort,
+                _settings.ModelSharingTeklaBin,
+                _settings.TeklaExtensionsLocalPath);
+        }
+
+        if (_shell.Structura.Module("Structura") is Features.Structura.StructuraModule st)
+        {
+            st.Initialize(
+                _settings.StructuraSpeckleUrl, _settings.StructuraSpeckleLogin, _settings.StructuraSpecklePasswordCipherBase64,
+                _settings.StructuraNextcloudUrl, _settings.StructuraNextcloudLogin, _settings.StructuraNextcloudPasswordCipherBase64);
+        }
+
+        if (_shell.Vpn.Module("Общая папка (VPN)") is Features.Vpn.VpnModule vpn)
+        {
+            vpn.PushContext(new Features.Vpn.VpnContext(
+                _settings.VpnEnabled, _settings.VpnSmbUnc, _settings.VpnServerIp,
+                _lastVpnConfig, _lastSmbLogin, _lastSmbPassword));
+        }
+    }
+
+    // Shell-owned SMB-over-VPN mount, invoked by the VPN module's OpenShareHandler. Ported verbatim from the old
+    // VpnOpenFolder_Click: prefer the in-memory SMB creds, fall back to a plain explorer open, warn on failure.
+    private async void OpenVpnShareAsync(string unc)
+    {
+        if (string.IsNullOrWhiteSpace(unc))
+        {
+            return;
+        }
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_lastSmbLogin) && !string.IsNullOrWhiteSpace(_lastSmbPassword))
+            {
+                await ConnectSmbInternalAsync(_lastSmbLogin, _lastSmbPassword, unc, openExplorer: true);
+                AppendLog("VPN: общая папка подключена (" + unc + ").");
+            }
+            else
+            {
+                Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = unc, UseShellExecute = true });
+                AppendLog("VPN: открыта папка без явного логина; при запросе введите SMB-логин или переподключитесь по токену.");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog("VPN open folder error: " + ex.Message);
+            try { Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = unc, UseShellExecute = true }); } catch { }
+            ThemedDialogs.Show(this,
+                "Не удалось автоматически подключить общую папку через VPN: " + ex.Message +
+                "\n\nЕсли откроется окно проводника с запросом — введите SMB-логин и пароль из вкладки «Коннектор».",
+                "VPN — общая папка", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -270,7 +457,7 @@ public partial class MainWindow : Window
         }
         _ = TryAutoConnectAsync();
         _ = CheckUpdatesAsync(showDialogs: false);
-        _ = RunTeklaSyncCycleAsync(showDialogs: false, forceRefresh: false, autoApplyIfPossible: true);
+        _ = _standard?.RunTeklaSyncAsync(showDialogs: false, forceRefresh: false, autoApplyIfPossible: true) ?? Task.CompletedTask;
         _updateTimer.Interval = UpdateCheckInterval;
         _updateTimer.Start();
         _teklaSyncTimer.Interval = TeklaSyncCheckInterval;
@@ -310,7 +497,7 @@ public partial class MainWindow : Window
 
         try
         {
-            UpdateStateTextBlock.Text = "Обновление: загрузка установщика...";
+            _connector?.SetUpdateState("Обновление: загрузка установщика...");
             _downloadedInstallerPath = await _updateService.DownloadInstallerAsync(_pendingUpdate, CancellationToken.None);
             AppendLog("Скачан установщик обновления: " + _downloadedInstallerPath);
             UpdateService.RunInstaller(_downloadedInstallerPath);
@@ -319,7 +506,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppendLog("Ошибка автообновления: " + ex.Message);
-            UpdateStateTextBlock.Text = "Обновление: ошибка установки";
+            _connector?.SetUpdateState("Обновление: ошибка установки");
             _updateOfferShown = false;
         }
     }
@@ -468,143 +655,29 @@ public partial class MainWindow : Window
     private async void UpdateTimer_Tick(object? sender, EventArgs e)
     {
         await CheckUpdatesAsync(showDialogs: false);
-        await RunTeklaSyncCycleAsync(showDialogs: false, forceRefresh: false, autoApplyIfPossible: true);
+        if (_standard is not null)
+        {
+            await _standard.RunTeklaSyncAsync(showDialogs: false, forceRefresh: false, autoApplyIfPossible: true);
+        }
     }
 
     private async void TeklaSyncTimer_Tick(object? sender, EventArgs e)
     {
-        await RunTeklaSyncCycleAsync(showDialogs: false, forceRefresh: false, autoApplyIfPossible: true);
+        if (_standard is not null)
+        {
+            await _standard.RunTeklaSyncAsync(showDialogs: false, forceRefresh: false, autoApplyIfPossible: true);
+        }
     }
 
     private void UpdateActionButtonUi()
     {
         if (_pendingUpdate is null)
         {
-            UpdateActionButton.Content = "Проверить обновление коннектора";
-            UpdateActionButton.Style = (Style)FindResource("SecondaryButton");
+            _connector?.SetUpdateAction("Проверить обновление коннектора", isPrimaryStyle: false);
             return;
         }
 
-        UpdateActionButton.Content = "Скачать и установить обновление";
-        UpdateActionButton.Style = (Style)FindResource("PrimaryButton");
-    }
-
-    private void UpdateTeklaUi()
-    {
-        var firmTargetRevision = string.IsNullOrWhiteSpace(_settings.TeklaStandardTargetRevision)
-            ? "-"
-            : _settings.TeklaStandardTargetRevision.Trim();
-        var firmHasTargetRevision = !string.IsNullOrWhiteSpace(_settings.TeklaStandardTargetRevision);
-        TeklaCurrentVersionTextBlock.Text = firmTargetRevision;
-        TeklaUpToDateTextBlock.Text = firmHasTargetRevision &&
-                                      !_teklaStandardService.IsUpdateAvailable(_settings.TeklaStandardInstalledRevision, _settings.TeklaStandardTargetRevision)
-            ? "да"
-            : "нет";
-        TeklaStatusTextBlock.Text = BuildFirmStatusText();
-        TeklaRoleTextBlock.Text = _settings.IsFirmAdmin ? "Роль администратора: да" : "Роль администратора: нет";
-        TeklaFirmLocalPathTextBox.Text = string.IsNullOrWhiteSpace(_settings.TeklaStandardLocalPath)
-            ? DefaultTeklaStandardLocalPath
-            : _settings.TeklaStandardLocalPath;
-        TeklaExtensionsCurrentVersionTextBlock.Text = string.IsNullOrWhiteSpace(_settings.TeklaExtensionsTargetRevision)
-            ? "-"
-            : _settings.TeklaExtensionsTargetRevision.Trim();
-        TeklaExtensionsUpToDateTextBlock.Text = !string.IsNullOrWhiteSpace(_settings.TeklaExtensionsTargetRevision) &&
-                                                !_teklaStandardService.IsUpdateAvailable(_settings.TeklaExtensionsInstalledRevision, _settings.TeklaExtensionsTargetRevision)
-            ? "да"
-            : "нет";
-        TeklaExtensionsStatusTextBlock.Text = BuildExtensionsStatusText();
-        TeklaExtensionsLocalPathTextBox.Text = string.IsNullOrWhiteSpace(_settings.TeklaExtensionsLocalPath)
-            ? DefaultTeklaExtensionsLocalPath
-            : _settings.TeklaExtensionsLocalPath;
-        TeklaLibrariesCurrentVersionTextBlock.Text = string.IsNullOrWhiteSpace(_settings.TeklaLibrariesTargetRevision)
-            ? "-"
-            : _settings.TeklaLibrariesTargetRevision.Trim();
-        TeklaLibrariesUpToDateTextBlock.Text = !string.IsNullOrWhiteSpace(_settings.TeklaLibrariesTargetRevision) &&
-                                               !_teklaStandardService.IsUpdateAvailable(_settings.TeklaLibrariesInstalledRevision, _settings.TeklaLibrariesTargetRevision)
-            ? "да"
-            : "нет";
-        TeklaLibrariesStatusTextBlock.Text = BuildLibrariesStatusText();
-        TeklaLibrariesLocalPathTextBox.Text = string.IsNullOrWhiteSpace(_settings.TeklaLibrariesLocalPath)
-            ? DefaultTeklaLibrariesLocalPath
-            : _settings.TeklaLibrariesLocalPath;
-        TeklaPublishFirmSourcePathTextBox.Text = string.IsNullOrWhiteSpace(_settings.TeklaPublishSourcePath)
-            ? DefaultTeklaPublishSourcePath
-            : _settings.TeklaPublishSourcePath;
-        TeklaPublishExtensionsSourcePathTextBox.Text = string.IsNullOrWhiteSpace(_settings.TeklaExtensionsPublishSourcePath)
-            ? DefaultTeklaExtensionsPublishSourcePath
-            : _settings.TeklaExtensionsPublishSourcePath;
-        TeklaPublishLibrariesSourcePathTextBox.Text = string.IsNullOrWhiteSpace(_settings.TeklaLibrariesPublishSourcePath)
-            ? DefaultTeklaLibrariesPublishSourcePath
-            : _settings.TeklaLibrariesPublishSourcePath;
-        UpdateStructuraAccessStatusUi();
-        UpdateTeklaActionButtonUi();
-
-        TeklaPublishPanel.Visibility = _settings.IsFirmAdmin ? Visibility.Visible : Visibility.Collapsed;
-        TeklaPublishButton.IsEnabled = _settings.IsFirmAdmin;
-        if (string.IsNullOrWhiteSpace(TeklaPublishNotesTextBox.Text))
-        {
-            TeklaPublishNotesTextBox.Text = "Публикация из Structura Connector";
-        }
-
-        var canRestartTeklaServer = _settings.IsSystemAdmin || _settings.IsFirmAdmin;
-        ServerActionsPanel.Visibility = canRestartTeklaServer ? Visibility.Visible : Visibility.Collapsed;
-        RestartTeklaServerButton.IsEnabled = canRestartTeklaServer;
-        var (teklaOverallText, teklaOverallBrush) = BuildTeklaOverallStatus();
-        TeklaOverallStatusTextBlock.Text = teklaOverallText;
-        TeklaOverallStatusTextBlock.Foreground = teklaOverallBrush;
-        ConnectorTeklaSyncStatusTextBlock.Text = teklaOverallText;
-        ConnectorTeklaSyncStatusTextBlock.Foreground = teklaOverallBrush;
-        UpdateHeaderStatusUi();
-    }
-
-    private void UpdateTeklaActionButtonUi()
-    {
-        if (_teklaCheckInProgress)
-        {
-            const string inProgressText = "Идет синхронизация Tekla...";
-            TeklaCheckButton.Content = inProgressText;
-            TeklaCheckButton.Style = (Style)FindResource("SyncButton");
-            TeklaCheckButton.IsEnabled = true;
-            ConnectorTeklaSyncButton.Content = inProgressText;
-            ConnectorTeklaSyncButton.Style = (Style)FindResource("SyncButton");
-            ConnectorTeklaSyncButton.IsEnabled = true;
-            return;
-        }
-
-        var hasUpdate =
-            _teklaStandardService.IsUpdateAvailable(_settings.TeklaStandardInstalledRevision, _settings.TeklaStandardTargetRevision) ||
-            _teklaStandardService.IsUpdateAvailable(_settings.TeklaExtensionsInstalledRevision, _settings.TeklaExtensionsTargetRevision) ||
-            _teklaStandardService.IsUpdateAvailable(_settings.TeklaLibrariesInstalledRevision, _settings.TeklaLibrariesTargetRevision);
-        var hasError = !string.IsNullOrWhiteSpace(FirstNonEmpty(
-            _settings.TeklaStandardLastError,
-            _settings.TeklaExtensionsLastError,
-            _settings.TeklaLibrariesLastError));
-
-        TeklaCheckButton.Content = hasError
-            ? "Повторить синхронизацию Tekla"
-            : hasUpdate
-                ? "Обновить Tekla сейчас"
-                : "Проверить и синхронизировать Tekla";
-        TeklaCheckButton.Style = (Style)FindResource(hasUpdate || hasError ? "SyncButton" : "SecondaryButton");
-        TeklaCheckButton.IsEnabled = true;
-        ConnectorTeklaSyncButton.Content = (string)TeklaCheckButton.Content;
-        ConnectorTeklaSyncButton.Style = (Style)FindResource(hasUpdate || hasError ? "SyncButton" : "SecondaryButton");
-        ConnectorTeklaSyncButton.IsEnabled = true;
-    }
-
-    private void UpdateStructuraAccessStatusUi()
-    {
-        var hasSpeckle = !string.IsNullOrWhiteSpace(_settings.StructuraSpeckleUrl);
-        var hasNextcloud = !string.IsNullOrWhiteSpace(_settings.StructuraNextcloudUrl);
-        var hasAnyLogin =
-            !string.IsNullOrWhiteSpace(_settings.StructuraSpeckleLogin) ||
-            !string.IsNullOrWhiteSpace(_settings.StructuraNextcloudLogin);
-
-        StructuraAccessStatusTextBlock.Text = hasSpeckle || hasNextcloud
-            ? hasAnyLogin
-                ? "Structura: доступы получены с сервера и привязаны к текущему токену"
-                : "Structura: ссылки получены, логины еще не назначены в админке"
-            : "Structura: доступы еще не получены с сервера";
+        _connector?.SetUpdateAction("Скачать и установить обновление", isPrimaryStyle: true);
     }
 
     private void UpdateHeaderStatusUi()
@@ -631,78 +704,8 @@ public partial class MainWindow : Window
             HeaderServerStatusTextBlock.Foreground = System.Windows.Media.Brushes.Gainsboro;
         }
 
-        var (teklaOverallText, teklaOverallBrush) = BuildTeklaOverallStatus();
-        HeaderFirmStatusTextBlock.Text = teklaOverallText;
-        HeaderFirmStatusTextBlock.Foreground = teklaOverallBrush;
-    }
-
-    private (string Text, System.Windows.Media.Brush Brush) BuildTeklaOverallStatus()
-    {
-        var hasKnownState = false;
-        var outdated = new List<string>();
-        var errors = new List<string>();
-
-        void Collect(string name, string installedRevision, string targetRevision, string lastError, bool pendingAfterClose)
-        {
-            if (!string.IsNullOrWhiteSpace(installedRevision) || !string.IsNullOrWhiteSpace(targetRevision))
-            {
-                hasKnownState = true;
-            }
-
-            if (pendingAfterClose || _teklaStandardService.IsUpdateAvailable(installedRevision, targetRevision))
-            {
-                outdated.Add(name);
-            }
-
-            if (string.IsNullOrWhiteSpace(lastError))
-            {
-                return;
-            }
-
-            if (string.Equals(lastError, "manifest_not_received", StringComparison.OrdinalIgnoreCase))
-            {
-                errors.Add(name + " (нет связи с сервером обновлений)");
-                return;
-            }
-
-            errors.Add(name);
-        }
-
-        Collect(
-            "папка фирмы",
-            _settings.TeklaStandardInstalledRevision,
-            _settings.TeklaStandardTargetRevision,
-            _settings.TeklaStandardLastError,
-            _settings.TeklaStandardPendingAfterClose);
-        Collect(
-            "пользовательские приложения",
-            _settings.TeklaExtensionsInstalledRevision,
-            _settings.TeklaExtensionsTargetRevision,
-            _settings.TeklaExtensionsLastError,
-            _settings.TeklaExtensionsPendingAfterClose);
-        Collect(
-            "Grasshopper Libraries",
-            _settings.TeklaLibrariesInstalledRevision,
-            _settings.TeklaLibrariesTargetRevision,
-            _settings.TeklaLibrariesLastError,
-            _settings.TeklaLibrariesPendingAfterClose);
-
-        if (!hasKnownState)
-        {
-            return ("Tekla Sync: проверка еще не выполнялась", System.Windows.Media.Brushes.DarkGray);
-        }
-
-        if (errors.Count > 0)
-        {
-            return ("Tekla Sync: есть ошибки в разделах: " + string.Join(", ", errors), System.Windows.Media.Brushes.Orange);
-        }
-
-        if (outdated.Count > 0)
-        {
-            return ("Tekla Sync: требуется обновить: " + string.Join(", ", outdated), System.Windows.Media.Brushes.Orange);
-        }
-
-        return ("Tekla Sync: все разделы актуальны", System.Windows.Media.Brushes.MediumSpringGreen);
+        // The Tekla overall status (HeaderFirmStatusTextBlock) now arrives from the Стандарт module via
+        // IShellHost.OnTeklaStatusChanged; UpdateHeaderStatusUi only owns the server-status line.
     }
 
     private void ShowTeklaPendingBalloon(string revision)
@@ -718,41 +721,6 @@ public partial class MainWindow : Window
             "Стандарт Tekla",
             "Найдена ревизия " + revision + ". Закройте Tekla, и Connector применит обновление автоматически на следующей проверке.",
             Forms.ToolTipIcon.Info);
-    }
-
-    private void ShowTeklaSyncFailedBalloon(string targetName, string message)
-    {
-        var noticeKey = targetName + "|" + message;
-        if (string.Equals(_lastTeklaSyncErrorNotice, noticeKey, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        _lastTeklaSyncErrorNotice = noticeKey;
-        var balloonMessage = string.IsNullOrWhiteSpace(message)
-            ? targetName + ": не удалось синхронизировать. Закройте блокирующую программу и повторите синхронизацию."
-            : message;
-        if (balloonMessage.Length > 240)
-        {
-            balloonMessage = balloonMessage[..237] + "...";
-        }
-        _trayIcon.ShowBalloonTip(
-            5000,
-            "Стандарт Tekla",
-            balloonMessage,
-            Forms.ToolTipIcon.Warning);
-
-        if (IsVisible && WindowState != WindowState.Minimized)
-        {
-            ThemedDialogs.Show(
-                this,
-                string.IsNullOrWhiteSpace(message)
-                    ? targetName + ": не удалось синхронизировать. Закройте блокирующую программу и повторите синхронизацию."
-                    : message,
-                "Не удалось обновить: " + targetName,
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-        }
     }
 
     private void HideToTray()
@@ -883,31 +851,20 @@ public partial class MainWindow : Window
             shouldPersist = true;
         }
 
-        ServerUrlTextBox.Text = _settings.ServerUrl;
-        UpdateManifestUrlTextBox.Text = _settings.UpdateManifestUrl;
-        DeviceIdTextBox.Text = _settings.DeviceId;
-        SmbLoginTextBox.Text = string.Empty;
-        SmbSharePathTextBox.Text = _settings.SmbSharePath;
-        IntervalTextBox.Text = _settings.HeartbeatSeconds.ToString();
-        AutoStartCheckBox.IsChecked = true;
-        TeklaPublishFirmSourcePathTextBox.Text = _settings.TeklaPublishSourcePath;
-        TeklaPublishExtensionsSourcePathTextBox.Text = _settings.TeklaExtensionsPublishSourcePath;
-        TeklaPublishLibrariesSourcePathTextBox.Text = _settings.TeklaLibrariesPublishSourcePath;
-        TeklaFirmLocalPathTextBox.Text = _settings.TeklaStandardLocalPath;
-        TeklaExtensionsLocalPathTextBox.Text = _settings.TeklaExtensionsLocalPath;
-        TeklaLibrariesLocalPathTextBox.Text = _settings.TeklaLibrariesLocalPath;
-        UpdateStructuraAccessStatusUi();
-
+        // The moved (mostly Collapsed) Коннектор controls + the token PasswordBox now live in ConnectorView; push the
+        // live settings into them through the module (replaces the ServerUrl/UpdateManifestUrl/DeviceId/SmbLogin/
+        // SmbSharePath/Interval/AutoStart/Token/SmbPassword writes — same values, sourced from the live AppSettings).
+        // The Tekla local-path / publish-source TextBoxes live in the Стандарт module's StandardView; the module
+        // populates them from _settings in its RefreshUi() (called from the ctor and after each token-connect).
         var token = SettingsService.DecryptToken(_settings.TokenCipherBase64);
-        TokenPasswordBox.Password = token;
+        _connector?.LoadFromSettings(token);
+        SyncFeatureModules();
 
         // restore the VPN config (decrypt) so "Включить VPN" works after a restart without re-connecting
         if (!string.IsNullOrWhiteSpace(_settings.VpnConfigCipherBase64))
         {
             _lastVpnConfig = SettingsService.DecryptToken(_settings.VpnConfigCipherBase64);
         }
-
-        SmbPasswordBox.Password = string.Empty;
 
         _timer.Interval = TimeSpan.FromSeconds(_settings.HeartbeatSeconds);
 
@@ -921,7 +878,10 @@ public partial class MainWindow : Window
 
     private AppSettings ReadSettingsFromUi()
     {
-        var token = TokenPasswordBox.Password.Trim();
+        // The token PasswordBox moved into ConnectorView. ApplyAndPersist captures the typed token into
+        // _settings.TokenCipherBase64 (via _connector.FlushEditsToSettings) BEFORE calling this, so source the token
+        // from _settings here (decrypt+trim) — the empty-token guard still fires exactly as with the old PasswordBox read.
+        var token = SettingsService.DecryptToken(_settings.TokenCipherBase64).Trim();
         if (string.IsNullOrWhiteSpace(token))
         {
             throw new InvalidOperationException("Токен не может быть пустым.");
@@ -938,36 +898,33 @@ public partial class MainWindow : Window
         var teklaManifestUrl = string.IsNullOrWhiteSpace(_settings.TeklaStandardManifestUrl)
             ? FixedTeklaStandardManifestUrl
             : _settings.TeklaStandardManifestUrl;
-        var teklaLocalPath = string.IsNullOrWhiteSpace(TeklaFirmLocalPathTextBox.Text)
-            ? (string.IsNullOrWhiteSpace(_settings.TeklaStandardLocalPath)
-                ? DefaultTeklaStandardLocalPath
-                : _settings.TeklaStandardLocalPath)
-            : TeklaFirmLocalPathTextBox.Text.Trim();
+        // The Tekla local-path / publish-source TextBoxes moved into the Стандарт module's StandardView. The module
+        // keeps _settings in sync with those edits (ApplyAndPersistTeklaPathsOnly + SaveSettings) before any save, so
+        // the shell sources these values from _settings (same default fallbacks as the original TextBox-empty branch).
+        var teklaLocalPath = string.IsNullOrWhiteSpace(_settings.TeklaStandardLocalPath)
+            ? DefaultTeklaStandardLocalPath
+            : _settings.TeklaStandardLocalPath;
         var teklaExtensionsManifestUrl = string.IsNullOrWhiteSpace(_settings.TeklaExtensionsManifestUrl)
             ? FixedTeklaExtensionsManifestUrl
             : _settings.TeklaExtensionsManifestUrl;
-        var teklaExtensionsLocalPath = string.IsNullOrWhiteSpace(TeklaExtensionsLocalPathTextBox.Text)
-            ? (string.IsNullOrWhiteSpace(_settings.TeklaExtensionsLocalPath)
-                ? DefaultTeklaExtensionsLocalPath
-                : _settings.TeklaExtensionsLocalPath)
-            : TeklaExtensionsLocalPathTextBox.Text.Trim();
+        var teklaExtensionsLocalPath = string.IsNullOrWhiteSpace(_settings.TeklaExtensionsLocalPath)
+            ? DefaultTeklaExtensionsLocalPath
+            : _settings.TeklaExtensionsLocalPath;
         var teklaLibrariesManifestUrl = string.IsNullOrWhiteSpace(_settings.TeklaLibrariesManifestUrl)
             ? FixedTeklaLibrariesManifestUrl
             : _settings.TeklaLibrariesManifestUrl;
-        var teklaLibrariesLocalPath = string.IsNullOrWhiteSpace(TeklaLibrariesLocalPathTextBox.Text)
-            ? (string.IsNullOrWhiteSpace(_settings.TeklaLibrariesLocalPath)
-                ? DefaultTeklaLibrariesLocalPath
-                : _settings.TeklaLibrariesLocalPath)
-            : TeklaLibrariesLocalPathTextBox.Text.Trim();
-        var teklaFirmPublishSourcePath = string.IsNullOrWhiteSpace(TeklaPublishFirmSourcePathTextBox.Text)
+        var teklaLibrariesLocalPath = string.IsNullOrWhiteSpace(_settings.TeklaLibrariesLocalPath)
+            ? DefaultTeklaLibrariesLocalPath
+            : _settings.TeklaLibrariesLocalPath;
+        var teklaFirmPublishSourcePath = string.IsNullOrWhiteSpace(_settings.TeklaPublishSourcePath)
             ? DefaultTeklaPublishSourcePath
-            : TeklaPublishFirmSourcePathTextBox.Text.Trim();
-        var teklaExtensionsPublishSourcePath = string.IsNullOrWhiteSpace(TeklaPublishExtensionsSourcePathTextBox.Text)
+            : _settings.TeklaPublishSourcePath;
+        var teklaExtensionsPublishSourcePath = string.IsNullOrWhiteSpace(_settings.TeklaExtensionsPublishSourcePath)
             ? DefaultTeklaExtensionsPublishSourcePath
-            : TeklaPublishExtensionsSourcePathTextBox.Text.Trim();
-        var teklaLibrariesPublishSourcePath = string.IsNullOrWhiteSpace(TeklaPublishLibrariesSourcePathTextBox.Text)
+            : _settings.TeklaExtensionsPublishSourcePath;
+        var teklaLibrariesPublishSourcePath = string.IsNullOrWhiteSpace(_settings.TeklaLibrariesPublishSourcePath)
             ? DefaultTeklaLibrariesPublishSourcePath
-            : TeklaPublishLibrariesSourcePathTextBox.Text.Trim();
+            : _settings.TeklaLibrariesPublishSourcePath;
 
         return new AppSettings
         {
@@ -1053,29 +1010,35 @@ public partial class MainWindow : Window
 
     private void ApplyAndPersist()
     {
+        _standard?.FlushPathEdits();   // capture typed-but-unbrowsed Tekla path edits before reading settings
+        // Capture the typed token from the moved Коннектор PasswordBox into _settings before ReadSettingsFromUi reads
+        // it back (mirrors StandardModule.FlushPathEdits). ReadSettingsFromUi now sources the token from _settings.
+        _settings.TokenCipherBase64 = SettingsService.EncryptToken(_connector?.FlushEditsToSettings() ?? string.Empty);
         _settings = ReadSettingsFromUi();
         _settingsService.Save(_settings);
         _autoStartService.SetEnabled(_settings.AutoStart);
         _timer.Interval = TimeSpan.FromSeconds(_settings.HeartbeatSeconds);
-        UpdateTeklaUi();
+        _standard?.RefreshUi();
         AppendLog("Настройки сохранены.");
     }
 
     private void UpdateRunStateUi()
     {
+        string text;
+        System.Windows.Media.Brush brush;
         if (_isRunning)
         {
-            RunStateTextBlock.Text = "Автоотправка heartbeat: включена";
-            RunStateTextBlock.Foreground = System.Windows.Media.Brushes.MediumSpringGreen;
+            text = "Автоотправка heartbeat: включена";
+            brush = System.Windows.Media.Brushes.MediumSpringGreen;
         }
         else
         {
-            RunStateTextBlock.Text = "Автоотправка heartbeat: выключена";
-            RunStateTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
+            text = "Автоотправка heartbeat: выключена";
+            brush = System.Windows.Media.Brushes.Orange;
         }
 
-        StartButton.IsEnabled = !_isRunning;
-        StopButton.IsEnabled = _isRunning;
+        // RunStateTextBlock + Start/StopButton moved into ConnectorView; push the computed text/brush/enabled state.
+        _connector?.SetRunState(text, brush, !_isRunning, _isRunning);
         UpdateHeaderStatusUi();
     }
 
@@ -1187,7 +1150,9 @@ public partial class MainWindow : Window
     {
         try
         {
-            var serverUrl = ServerUrlTextBox.Text.Trim();
+            // ServerUrlTextBox moved into ConnectorView (Collapsed); re-source from _settings (LoadFromSettings keeps it
+            // mirrored to _settings.ServerUrl, which is always FixedServerUrl — same value the old Collapsed box held).
+            var serverUrl = _settings.ServerUrl.Trim();
             if (!Uri.TryCreate(serverUrl, UriKind.Absolute, out _))
             {
                 throw new InvalidOperationException("Введите корректный URL сервера.");
@@ -1235,468 +1200,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OpenSpeckle_Click(object sender, RoutedEventArgs e)
-    {
-        OpenStructuraWebPage(_settings.StructuraSpeckleUrl, "Speckle");
-    }
-
-    private void OpenNextcloud_Click(object sender, RoutedEventArgs e)
-    {
-        OpenStructuraWebPage(_settings.StructuraNextcloudUrl, "Nextcloud");
-    }
-
-    private void ShowSpeckleAccess_Click(object sender, RoutedEventArgs e)
-    {
-        ShowStructuraAccessWindow(
-            "Сервер моделей - Speckle",
-            _settings.StructuraSpeckleUrl,
-            _settings.StructuraSpeckleLogin,
-            _settings.StructuraSpecklePasswordCipherBase64);
-    }
-
-    private void ShowNextcloudAccess_Click(object sender, RoutedEventArgs e)
-    {
-        ShowStructuraAccessWindow(
-            "Среда взаимодействия - Nextcloud",
-            _settings.StructuraNextcloudUrl,
-            _settings.StructuraNextcloudLogin,
-            _settings.StructuraNextcloudPasswordCipherBase64);
-    }
-
-    private void ShowStructuraAccessWindow(string title, string domain, string login, string passwordCipherBase64)
-    {
-        var dialog = new StructuraAccessWindow(
-            title,
-            domain,
-            login,
-            SettingsService.DecryptToken(passwordCipherBase64))
-        {
-            Owner = this
-        };
-        dialog.ShowDialog();
-    }
-
-    private void OpenStructuraWebPage(string url, string label)
-    {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            throw new InvalidOperationException("Некорректная ссылка " + label + ".");
-        }
-
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = uri.ToString(),
-            UseShellExecute = true
-        });
-        AppendLog("Открыта страница " + label + ": " + uri);
-    }
-
-    private (string Email, string Name) ResolveModelSharingIdentity()
-    {
-        var deviceId = (_settings.DeviceId ?? string.Empty).Trim();
-        var issuedTo = (_settings.IssuedTo ?? string.Empty).Trim();
-
-        // Email = stable, unique key the coordinator maps to a user. Prefer the device id (server-assigned,
-        // unique per PC) shaped as an email; fall back to issued_to if it is already an email, then to host.
-        string email;
-        if (issuedTo.Contains('@'))
-        {
-            email = issuedTo.ToLowerInvariant();
-        }
-        else if (!string.IsNullOrWhiteSpace(deviceId))
-        {
-            var sanitized = new string(deviceId.ToLowerInvariant()
-                .Select(ch => char.IsLetterOrDigit(ch) || ch == '-' || ch == '.' ? ch : '-')
-                .ToArray());
-            email = sanitized + "@structura-most.ru";
-        }
-        else
-        {
-            email = (Environment.UserName + "-" + Environment.MachineName).ToLowerInvariant() + "@structura-most.ru";
-        }
-
-        var name = !string.IsNullOrWhiteSpace(issuedTo)
-            ? issuedTo
-            : (!string.IsNullOrWhiteSpace(deviceId) ? deviceId : Environment.MachineName);
-        return (email, name);
-    }
-
-    private string ResolveModelSharingTeklaBin()
-    {
-        var configured = (ModelSharingTeklaBinTextBox.Text ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(configured))
-        {
-            configured = _settings.ModelSharingTeklaBin;
-        }
-        return _modelSharingService.ResolveTeklaBin(configured, _settings.TeklaExtensionsLocalPath);
-    }
-
-    private void UpdateModelSharingUi()
-    {
-        var teklaBin = ResolveModelSharingTeklaBin();
-        if (string.IsNullOrWhiteSpace(ModelSharingTeklaBinTextBox.Text))
-        {
-            ModelSharingTeklaBinTextBox.Text = teklaBin;
-        }
-
-        var (email, name) = ResolveModelSharingIdentity();
-        var hasDevice = !string.IsNullOrWhiteSpace(_settings.DeviceId);
-        var serverHost = string.IsNullOrWhiteSpace(_settings.ModelSharingServerHost) ? "62.113.36.107" : _settings.ModelSharingServerHost;
-        var serverPort = _settings.ModelSharingServerPort > 0 ? _settings.ModelSharingServerPort : 9990;
-        ModelSharingIdentityTextBlock.Text = hasDevice
-            ? $"Пользователь: {name} ({email}). Сервер: {serverHost}:{serverPort}."
-            : "Пользователь будет определён после подключения по токену устройства на вкладке \"Коннектор\".";
-
-        var status = _modelSharingService.GetStatus(teklaBin);
-        string text;
-        System.Windows.Media.Brush brush;
-        if (!status.FeatureDllExists)
-        {
-            text = "Статус: SharingUIFeature.dll не найден в указанной папке bin Tekla.";
-            brush = System.Windows.Media.Brushes.Orange;
-        }
-        else if (status.Provisioned)
-        {
-            var applied = status.AppliedUtc?.ToLocalTime().ToString("dd.MM.yyyy HH:mm") ?? "-";
-            text = $"Статус: настроено ({status.IdentityEmail}, сервер {status.ServerHost}:{status.ServerPort}). Применено: {applied}.";
-            brush = System.Windows.Media.Brushes.MediumSpringGreen;
-        }
-        else if (status.NeedsReapply)
-        {
-            text = "Статус: ранее настраивалось, но файл заменён обновлением Tekla — запустите настройку повторно.";
-            brush = System.Windows.Media.Brushes.Orange;
-        }
-        else
-        {
-            text = "Статус: не настроено на этом компьютере.";
-            brush = System.Windows.Media.Brushes.Gainsboro;
-        }
-        ModelSharingStatusTextBlock.Text = text;
-        ModelSharingStatusTextBlock.Foreground = brush;
-        ModelSharingSetupButton.IsEnabled = hasDevice && status.FeatureDllExists;
-    }
-
-    private void ModelSharingBrowse_Click(object sender, RoutedEventArgs e)
-    {
-        using var dialog = new Forms.FolderBrowserDialog
-        {
-            Description = "Выберите папку bin Tekla Structures",
-            SelectedPath = (ModelSharingTeklaBinTextBox.Text ?? string.Empty).Trim()
-        };
-        if (dialog.ShowDialog() == Forms.DialogResult.OK)
-        {
-            ModelSharingTeklaBinTextBox.Text = dialog.SelectedPath;
-            UpdateModelSharingUi();
-        }
-    }
-
-    private void ModelSharingOpenLog_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (!File.Exists(_modelSharingService.LogFilePath))
-            {
-                File.WriteAllText(_modelSharingService.LogFilePath, string.Empty);
-            }
-            Process.Start(new ProcessStartInfo { FileName = _modelSharingService.LogFilePath, UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            AppendLog("Не удалось открыть лог Model Sharing: " + ex.Message);
-        }
-    }
-
-    private async void ModelSharingSetup_Click(object sender, RoutedEventArgs e)
-    {
-        OperationProgressWindow? progressWindow = null;
-        try
-        {
-            if (string.IsNullOrWhiteSpace(_settings.DeviceId))
-            {
-                throw new InvalidOperationException("Сначала подключитесь по токену устройства на вкладке \"Коннектор\".");
-            }
-
-            var teklaBin = ResolveModelSharingTeklaBin();
-            var dll = System.IO.Path.Combine(teklaBin, "Features", "SharingUIFeature.dll");
-            if (!File.Exists(dll))
-            {
-                throw new InvalidOperationException("Не найден файл " + dll + ". Укажите правильную папку bin Tekla.");
-            }
-
-            if (_modelSharingService.IsTeklaRunning())
-            {
-                ThemedDialogs.Show(this,
-                    "Сейчас запущена Tekla Structures. Закройте её и повторите настройку Model Sharing.",
-                    "Model Sharing", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            var (email, name) = ResolveModelSharingIdentity();
-            var serverHost = string.IsNullOrWhiteSpace(_settings.ModelSharingServerHost) ? "62.113.36.107" : _settings.ModelSharingServerHost;
-            var serverPort = _settings.ModelSharingServerPort > 0 ? _settings.ModelSharingServerPort : 9990;
-
-            var confirm = ThemedDialogs.Show(this,
-                $"Подготовить Tekla к Model Sharing на этом компьютере?\n\nПользователь: {name} ({email})\nСервер: {serverHost}:{serverPort}\nПапка: {teklaBin}\n\nTekla должна быть закрыта.",
-                "Model Sharing", MessageBoxButton.YesNo, MessageBoxImage.Question);
-            if (confirm != MessageBoxResult.Yes)
-            {
-                return;
-            }
-
-            var request = new ModelSharingProvisionRequest
-            {
-                TeklaBin = teklaBin,
-                ServerHost = serverHost,
-                ServerPort = serverPort,
-                IdentityEmail = email,
-                IdentityName = name
-            };
-
-            progressWindow = new OperationProgressWindow("Model Sharing", "Готовим Tekla к совместной работе");
-            progressWindow.Owner = this;
-            progressWindow.Show();
-            progressWindow.UpdateStep("Настраиваем Tekla", "Патчим клиент и записываем адрес сервера", 1, 2, TimeSpan.FromSeconds(8));
-            ModelSharingSetupButton.IsEnabled = false;
-
-            var result = await Task.Run(() => _modelSharingService.Provision(request));
-
-            if (result.IsSuccess)
-            {
-                _settings.ModelSharingTeklaBin = teklaBin;
-                _settings.ModelSharingServerHost = serverHost;
-                _settings.ModelSharingServerPort = serverPort;
-                _settings.ModelSharingIdentityEmail = email;
-                _settings.ModelSharingLastAppliedUtc = DateTimeOffset.UtcNow;
-                _settingsService.Save(_settings);
-                progressWindow.UpdateStep("Готово", "Tekla настроена", 2, 2, TimeSpan.Zero);
-                progressWindow.MarkSucceeded(result.Message);
-                AppendLog("Model Sharing настроен: " + email + " -> " + serverHost + ":" + serverPort);
-                ThemedDialogs.Show(this, result.Message, "Model Sharing", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            else
-            {
-                progressWindow.MarkFailed(result.Message);
-                AppendLog("Model Sharing не настроен: " + result.Message +
-                          (string.IsNullOrWhiteSpace(result.TechnicalDetails) ? string.Empty : " | " + result.TechnicalDetails));
-                ThemedDialogs.Show(this, result.Message, "Model Sharing", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-        }
-        catch (Exception ex)
-        {
-            progressWindow?.MarkFailed(ex.Message);
-            AppendLog("Ошибка настройки Model Sharing: " + ex.Message);
-            ThemedDialogs.Show(this, ex.Message, "Model Sharing", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-        finally
-        {
-            UpdateModelSharingUi();
-        }
-    }
-
-    // ===== VPN-доступ к общей папке (AmneziaWG) =====
-
-    private void UpdateVpnUi()
-    {
-        // The client tunnel name is always the local constant (the server-side name may differ).
-        var tunnel = VpnTunnel;
-        var unc = string.IsNullOrWhiteSpace(_settings.VpnSmbUnc)
-            ? (string.IsNullOrWhiteSpace(_settings.VpnServerIp) ? "" : $@"\\{_settings.VpnServerIp}\BIM_Models")
-            : _settings.VpnSmbUnc;
-        VpnShareUncTextBlock.Text = string.IsNullOrWhiteSpace(unc) ? "-" : unc;
-
-        if (!_settings.VpnEnabled)
-        {
-            // VPN turned off by the server — but if a tunnel is still installed from before, the user
-            // must retain a way to remove it (otherwise it keeps routing across reboots).
-            var stillInstalled = _vpnService.BundledClientPresent && _vpnService.IsTunnelInstalled(tunnel);
-            if (stillInstalled)
-            {
-                VpnStatusTextBlock.Text = "VPN отключён администратором, но туннель ещё установлен на этом ПК. Нажмите «Отключить VPN», чтобы удалить его.";
-                VpnStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
-                VpnEnableButton.IsEnabled = false;
-                VpnDisableButton.IsEnabled = true;
-                VpnOpenFolderButton.IsEnabled = false;
-            }
-            else
-            {
-                VpnStatusTextBlock.Text = "VPN-доступ к общей папке не настроен администратором (или не требуется в вашей сети).";
-                VpnStatusTextBlock.Foreground = System.Windows.Media.Brushes.DarkGray;
-                VpnEnableButton.IsEnabled = false;
-                VpnDisableButton.IsEnabled = false;
-                VpnOpenFolderButton.IsEnabled = false;
-            }
-            return;
-        }
-
-        if (!_vpnService.BundledClientPresent)
-        {
-            VpnStatusTextBlock.Text = "Встроенный VPN-клиент отсутствует в этой сборке коннектора. Обновите коннектор.";
-            VpnStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
-            VpnEnableButton.IsEnabled = false;
-            VpnDisableButton.IsEnabled = false;
-            VpnOpenFolderButton.IsEnabled = false;
-            return;
-        }
-
-        var running = _vpnService.IsTunnelRunning(tunnel);
-        if (running)
-        {
-            VpnStatusTextBlock.Text = "VPN включён. Общая папка доступна из любой сети: " + (string.IsNullOrWhiteSpace(unc) ? "(адрес не задан)" : unc);
-            VpnStatusTextBlock.Foreground = System.Windows.Media.Brushes.MediumSpringGreen;
-            VpnEnableButton.Content = "Переподключить VPN";
-            VpnEnableButton.IsEnabled = true;
-            VpnDisableButton.IsEnabled = true;
-            VpnOpenFolderButton.IsEnabled = !string.IsNullOrWhiteSpace(unc);
-        }
-        else
-        {
-            VpnStatusTextBlock.Text = "VPN-доступ настроен, но не включён. Нажмите «Включить VPN» (потребуется однократное подтверждение прав администратора).";
-            VpnStatusTextBlock.Foreground = System.Windows.Media.Brushes.Orange;
-            VpnEnableButton.Content = "Включить VPN";
-            VpnEnableButton.IsEnabled = true;
-            VpnDisableButton.IsEnabled = _vpnService.IsTunnelInstalled(tunnel);
-            VpnOpenFolderButton.IsEnabled = false;
-        }
-    }
-
-    private async void VpnEnable_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (!_settings.VpnEnabled)
-            {
-                ThemedDialogs.Show(this, "VPN-доступ не включён администратором.", "VPN", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-            if (string.IsNullOrWhiteSpace(_lastVpnConfig))
-            {
-                ThemedDialogs.Show(this,
-                    "Нет конфигурации VPN. Нажмите «Подключиться по токену» на вкладке «Коннектор», затем повторите.",
-                    "VPN", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            var tunnel = VpnTunnel;
-            VpnEnableButton.IsEnabled = false;
-            VpnStatusTextBlock.Text = "Включаем VPN... подтвердите запрос прав администратора (UAC).";
-            var result = await Task.Run(() => _vpnService.Enable(_lastVpnConfig, tunnel));
-            AppendLog("VPN enable: " + (result.IsSuccess ? "ok" : "fail") + " — " + result.Message);
-            ThemedDialogs.Show(this, result.Message, "VPN",
-                MessageBoxButton.OK, result.IsSuccess ? MessageBoxImage.Information : MessageBoxImage.Warning);
-        }
-        catch (Exception ex)
-        {
-            AppendLog("VPN enable error: " + ex.Message);
-            ThemedDialogs.Show(this, ex.Message, "VPN", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-        finally
-        {
-            UpdateVpnUi();
-        }
-    }
-
-    private async void VpnDisable_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var tunnel = VpnTunnel;
-            VpnDisableButton.IsEnabled = false;
-            var result = await Task.Run(() => _vpnService.Disable(tunnel));
-            AppendLog("VPN disable: " + (result.IsSuccess ? "ok" : "fail") + " — " + result.Message);
-            ThemedDialogs.Show(this, result.Message, "VPN",
-                MessageBoxButton.OK, result.IsSuccess ? MessageBoxImage.Information : MessageBoxImage.Warning);
-        }
-        catch (Exception ex)
-        {
-            AppendLog("VPN disable error: " + ex.Message);
-            ThemedDialogs.Show(this, ex.Message, "VPN", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-        finally
-        {
-            UpdateVpnUi();
-        }
-    }
-
-    private async void VpnOpenFolder_Click(object sender, RoutedEventArgs e)
-    {
-        var unc = string.IsNullOrWhiteSpace(_settings.VpnSmbUnc)
-            ? (string.IsNullOrWhiteSpace(_settings.VpnServerIp) ? "" : $@"\\{_settings.VpnServerIp}\BIM_Models")
-            : _settings.VpnSmbUnc;
-        if (string.IsNullOrWhiteSpace(unc))
-        {
-            return;
-        }
-        try
-        {
-            // The share over VPN is a different host (tunnel IP), so it needs the SMB login mounted
-            // explicitly — otherwise Windows uses the wrong identity and access is denied.
-            if (!string.IsNullOrWhiteSpace(_lastSmbLogin) && !string.IsNullOrWhiteSpace(_lastSmbPassword))
-            {
-                await ConnectSmbInternalAsync(_lastSmbLogin, _lastSmbPassword, unc, openExplorer: true);
-                AppendLog("VPN: общая папка подключена (" + unc + ").");
-            }
-            else
-            {
-                // no creds in memory (e.g. before first token connect): fall back to plain open
-                Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = unc, UseShellExecute = true });
-                AppendLog("VPN: открыта папка без явного логина; при запросе введите SMB-логин или переподключитесь по токену.");
-            }
-        }
-        catch (Exception ex)
-        {
-            AppendLog("VPN open folder error: " + ex.Message);
-            try { Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = unc, UseShellExecute = true }); } catch { }
-            ThemedDialogs.Show(this,
-                "Не удалось автоматически подключить общую папку через VPN: " + ex.Message +
-                "\n\nЕсли откроется окно проводника с запросом — введите SMB-логин и пароль из вкладки «Коннектор».",
-                "VPN — общая папка", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-    }
-
-    private void VpnOpenLog_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (!File.Exists(_vpnService.LogFilePath))
-            {
-                File.WriteAllText(_vpnService.LogFilePath, string.Empty);
-            }
-            Process.Start(new ProcessStartInfo { FileName = _vpnService.LogFilePath, UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            AppendLog("VPN open log error: " + ex.Message);
-        }
-    }
-
-    private async void ConnectByToken_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var token = TokenPasswordBox.Password.Trim();
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                throw new InvalidOperationException("Введите токен устройства.");
-            }
-
-            await ConnectByTokenInternalAsync(token, showSuccessDialog: true);
-        }
-        catch (TaskCanceledException)
-        {
-            const string message = "Сервер отвечает дольше обычного. Подождите немного и повторите подключение.";
-            AppendLog("Ошибка автоподключения по токену: " + message);
-            _serverConnectionFailed = true;
-            UpdateHeaderStatusUi();
-            ThemedDialogs.Show(this, message, "Время ожидания истекло", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (Exception ex)
-        {
-            AppendLog("Ошибка автоподключения по токену: " + ex.Message);
-            _serverConnectionFailed = true;
-            UpdateHeaderStatusUi();
-            ThemedDialogs.Show(this, ex.Message, "Ошибка подключения", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
+    // (ConnectByToken_Click moved into ConnectorView — it calls the SACRED engine below via IConnectorHost.ConnectByTokenAsync.)
 
     private async Task ConnectByTokenInternalAsync(string token, bool showSuccessDialog)
     {
@@ -1826,12 +1330,9 @@ public partial class MainWindow : Window
         _activeSessionId = bootstrap.SessionId;
         _serverConnectionFailed = false;
 
-        DeviceIdTextBox.Text = _settings.DeviceId;
-        IntervalTextBox.Text = _settings.HeartbeatSeconds.ToString();
-        UpdateManifestUrlTextBox.Text = _settings.UpdateManifestUrl;
-        SmbLoginTextBox.Text = bootstrap.SmbAccess.Login;
-        SmbPasswordBox.Password = string.Empty;
-        SmbSharePathTextBox.Text = _settings.SmbSharePath;
+        // The six post-connect Коннектор controls moved into ConnectorView; push the same values across the seam
+        // (DeviceId/Interval/UpdateManifestUrl/SmbLogin + SmbPassword cleared + SmbSharePath — exact original values).
+        _connector?.ApplyConnectResult(_settings.DeviceId, _settings.HeartbeatSeconds, _settings.UpdateManifestUrl, bootstrap.SmbAccess.Login, _settings.SmbSharePath);
         // SMB creds (kept in memory) so we can mount the share over VPN with the right login.
         _lastSmbLogin = bootstrap.SmbAccess.Login;
         _lastSmbPassword = bootstrap.SmbAccess.Password;
@@ -1852,9 +1353,8 @@ public partial class MainWindow : Window
             AppendLog("Получена конфигурация VPN для доступа к общей папке.");
         }
 
-        UpdateTeklaUi();
-        UpdateModelSharingUi();
-        UpdateVpnUi();
+        _standard?.RefreshUi();
+        SyncFeatureModules();
         AppendLog("Настройки сохранены.");
 
         var smbConnected = true;
@@ -1905,7 +1405,7 @@ public partial class MainWindow : Window
         }
 
         _updateCheckInProgress = true;
-        UpdateActionButton.IsEnabled = false;
+        _connector?.SetUpdateActionEnabled(false);
         try
         {
             var manifestUrl = string.IsNullOrWhiteSpace(_settings.UpdateManifestUrl)
@@ -1917,7 +1417,7 @@ public partial class MainWindow : Window
             }
 
             _settings.UpdateManifestUrl = manifestUrl;
-            UpdateManifestUrlTextBox.Text = manifestUrl;
+            _connector?.SetUpdateManifestUrl(manifestUrl);
             _settingsService.Save(_settings);
 
             var manifest = await _updateService.TryGetUpdateAsync(manifestUrl, CancellationToken.None);
@@ -1925,7 +1425,7 @@ public partial class MainWindow : Window
             {
                 _pendingUpdate = null;
                 _lastUpdateToastVersion = string.Empty;
-                UpdateStateTextBlock.Text = "Обновление: не удалось получить данные";
+                _connector?.SetUpdateState("Обновление: не удалось получить данные");
                 UpdateActionButtonUi();
                 if (showDialogs)
                 {
@@ -1937,7 +1437,7 @@ public partial class MainWindow : Window
             if (_updateService.IsUpdateAvailable(manifest))
             {
                 _pendingUpdate = manifest;
-                UpdateStateTextBlock.Text = $"Доступно обновление: {manifest.Version}";
+                _connector?.SetUpdateState($"Доступно обновление: {manifest.Version}");
                 AppendLog("Найдено обновление: " + manifest.Version);
                 ShowUpdateAvailableToast(manifest);
                 if (!showDialogs)
@@ -1962,7 +1462,7 @@ public partial class MainWindow : Window
             {
                 _pendingUpdate = null;
                 _lastUpdateToastVersion = string.Empty;
-                UpdateStateTextBlock.Text = $"Обновление: актуально ({_updateService.CurrentVersion})";
+                _connector?.SetUpdateState($"Обновление: актуально ({_updateService.CurrentVersion})");
                 UpdateActionButtonUi();
                 if (showDialogs)
                 {
@@ -1973,7 +1473,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _pendingUpdate = null;
-            UpdateStateTextBlock.Text = "Обновление: ошибка проверки";
+            _connector?.SetUpdateState("Обновление: ошибка проверки");
             AppendLog("Ошибка проверки обновления: " + ex.Message);
             UpdateActionButtonUi();
             if (showDialogs)
@@ -1984,29 +1484,12 @@ public partial class MainWindow : Window
         finally
         {
             _updateCheckInProgress = false;
-            UpdateActionButton.IsEnabled = true;
+            _connector?.SetUpdateActionEnabled(true);
         }
     }
 
-    private async void UpdateAction_Click(object sender, RoutedEventArgs e)
-    {
-        if (_pendingUpdate is null)
-        {
-            await CheckUpdatesAsync(showDialogs: true);
-            return;
-        }
-
-        await InstallPendingUpdateAsync(confirmBeforeRun: true);
-    }
-
-    private void ShowReleaseNotes_Click(object sender, RoutedEventArgs e)
-    {
-        var window = new ReleaseNotesWindow(ReleaseNotes, "1.0.20")
-        {
-            Owner = this
-        };
-        window.ShowDialog();
-    }
+    // (UpdateAction_Click + ShowReleaseNotes_Click moved into ConnectorView — they route through IConnectorHost
+    // [HasPendingUpdate/CheckUpdatesAsync/InstallPendingUpdateAsync] and IConnectorHost.ReleaseNotes/OwnerWindow.)
 
     private async Task InstallPendingUpdateAsync(bool confirmBeforeRun)
     {
@@ -2021,8 +1504,8 @@ public partial class MainWindow : Window
                 }
             }
 
-            UpdateActionButton.IsEnabled = false;
-            UpdateStateTextBlock.Text = "Обновление: загрузка установщика...";
+            _connector?.SetUpdateActionEnabled(false);
+            _connector?.SetUpdateState("Обновление: загрузка установщика...");
             _downloadedInstallerPath = await _updateService.DownloadInstallerAsync(_pendingUpdate, CancellationToken.None);
             AppendLog("Скачан установщик обновления: " + _downloadedInstallerPath);
 
@@ -2039,667 +1522,17 @@ public partial class MainWindow : Window
             }
             else
             {
-                UpdateStateTextBlock.Text = "Обновление: установщик скачан";
-                UpdateActionButton.IsEnabled = true;
+                _connector?.SetUpdateState("Обновление: установщик скачан");
+                _connector?.SetUpdateActionEnabled(true);
             }
         }
         catch (Exception ex)
         {
-            UpdateActionButton.IsEnabled = _pendingUpdate is not null;
-            UpdateStateTextBlock.Text = "Обновление: ошибка установки";
+            _connector?.SetUpdateActionEnabled(_pendingUpdate is not null);
+            _connector?.SetUpdateState("Обновление: ошибка установки");
             AppendLog("Ошибка установки обновления: " + ex.Message);
             ThemedDialogs.Show(this, ex.Message, "Ошибка обновления", MessageBoxButton.OK, MessageBoxImage.Error);
         }
-    }
-
-    private async Task<List<string>> RunTeklaSyncCycleAsync(
-        bool showDialogs,
-        bool forceRefresh,
-        bool autoApplyIfPossible,
-        OperationProgressWindow? progressReporter = null)
-    {
-        var summaryLines = new List<string>();
-        if (_teklaCheckInProgress)
-        {
-            summaryLines.Add("Синхронизация уже выполняется");
-            return summaryLines;
-        }
-
-        _teklaCheckInProgress = true;
-        UpdateTeklaActionButtonUi();
-
-        try
-        {
-            NormalizeTeklaSettings();
-            ApplyAndPersistTeklaPathsOnly();
-
-            const int totalSteps = 3;
-            var currentStep = 0;
-
-            currentStep++;
-            progressReporter?.UpdateStep(
-                "Проверяем раздел: Папка фирмы",
-                "Получаем данные и применяем обновление при необходимости",
-                currentStep,
-                totalSteps,
-                EstimateOperationEta(currentStep, totalSteps));
-            await CheckAndApplyTeklaTargetAsync(CreateFirmTargetState(), ApplyFirmTargetState, forceRefresh, autoApplyIfPossible, summaryLines, progressReporter);
-
-            currentStep++;
-            progressReporter?.UpdateStep(
-                "Проверяем раздел: Пользовательские приложения",
-                "Получаем данные и применяем обновление при необходимости",
-                currentStep,
-                totalSteps,
-                EstimateOperationEta(currentStep, totalSteps));
-            await CheckAndApplyTeklaTargetAsync(CreateExtensionsTargetState(), ApplyExtensionsTargetState, forceRefresh, autoApplyIfPossible, summaryLines, progressReporter);
-
-            currentStep++;
-            progressReporter?.UpdateStep(
-                "Проверяем раздел: Grasshopper Libraries",
-                "Получаем данные и применяем обновление при необходимости",
-                currentStep,
-                totalSteps,
-                EstimateOperationEta(currentStep, totalSteps));
-            await CheckAndApplyTeklaTargetAsync(CreateLibrariesTargetState(), ApplyLibrariesTargetState, forceRefresh, autoApplyIfPossible, summaryLines, progressReporter);
-
-            _settingsService.Save(_settings);
-            UpdateTeklaUi();
-
-            if (showDialogs)
-            {
-                var message = summaryLines.Count == 0
-                    ? "Проверка Tekla sync завершена"
-                    : string.Join(Environment.NewLine, summaryLines);
-                ThemedDialogs.Show(
-                    this,
-                    message,
-                    HasTeklaSyncErrors() ? "Стандарт Tekla: есть ошибки" : "Стандарт Tekla",
-                    MessageBoxButton.OK,
-                    HasTeklaSyncErrors() ? MessageBoxImage.Warning : MessageBoxImage.Information);
-            }
-        }
-        catch (Exception ex)
-        {
-            _settings.TeklaStandardLastError = ex.Message;
-            _settings.TeklaExtensionsLastError = ex.Message;
-            _settings.TeklaLibrariesLastError = ex.Message;
-            _settings.TeklaStandardLastTechnicalError = ex.ToString();
-            _settings.TeklaExtensionsLastTechnicalError = ex.ToString();
-            _settings.TeklaLibrariesLastTechnicalError = ex.ToString();
-            _settingsService.Save(_settings);
-            summaryLines.Add("Синхронизация завершилась с ошибкой: " + ex.Message);
-            AppendLog("Ошибка проверки Tekla sync: " + ex.Message);
-            AppendLog("Технические детали Tekla sync: " + ex);
-            if (showDialogs)
-            {
-                ThemedDialogs.Show(this, ex.Message, "Стандарт Tekla", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-        finally
-        {
-            _teklaCheckInProgress = false;
-            UpdateTeklaUi();
-        }
-
-        return summaryLines;
-    }
-
-    private async Task CheckAndApplyTeklaTargetAsync(
-        TeklaManagedTargetState target,
-        Action<TeklaManagedTargetState> persist,
-        bool forceRefresh,
-        bool autoApplyIfPossible,
-        List<string> summaryLines,
-        OperationProgressWindow? progressReporter = null)
-    {
-        if (forceRefresh)
-        {
-            target.TargetRevision = string.Empty;
-        }
-
-        var manifest = await _teklaStandardService.TryGetManifestAsync(target.ManifestUrl, CancellationToken.None);
-        target.LastCheckUtc = DateTimeOffset.UtcNow;
-
-        if (manifest is null)
-        {
-            target.TargetVersion = string.Empty;
-            target.TargetRevision = string.Empty;
-            target.LastError = "manifest_not_received";
-            target.LastTechnicalError = "Не удалось получить manifest по адресу: " + target.ManifestUrl;
-            target.PendingAfterClose = false;
-            persist(target);
-            summaryLines.Add(target.DisplayName + ": данные обновления недоступны");
-            AppendLog(target.DisplayName + ": технические детали: " + target.LastTechnicalError);
-            return;
-        }
-
-        target.TargetVersion = manifest.Version;
-        target.TargetRevision = manifest.Revision;
-        target.RepoUrl = manifest.RepoUrl;
-        target.RepoRef = manifest.RepoRef;
-        target.RepoSubdir = manifest.RepoSubdir;
-
-        var updateAvailable = _teklaStandardService.IsUpdateAvailable(target.InstalledRevision, target.TargetRevision);
-        if (!updateAvailable)
-        {
-            target.PendingAfterClose = false;
-            target.LastError = string.Empty;
-            target.LastTechnicalError = string.Empty;
-            _lastTeklaSyncErrorNotice = string.Empty;
-            persist(target);
-            if (target.Key == "firm")
-            {
-                _teklaBalloonShown = false;
-            }
-            summaryLines.Add(target.DisplayName + ": актуально (" + target.TargetRevision + ")");
-            return;
-        }
-
-        AppendLog(target.DisplayName + ": найдена новая ревизия " + target.TargetRevision);
-
-        if (!autoApplyIfPossible)
-        {
-            target.PendingAfterClose = false;
-            target.LastError = string.Empty;
-            target.LastTechnicalError = string.Empty;
-            persist(target);
-            summaryLines.Add(target.DisplayName + ": доступна ревизия " + target.TargetRevision);
-            return;
-        }
-
-        progressReporter?.UpdateDetail("Копируем обновления в локальную папку: " + target.DisplayName);
-        var applyResult = await Task.Run(() => _teklaStandardService.ApplyPendingGitUpdate(new TeklaManagedSyncRequest
-        {
-            TargetKey = target.Key,
-            DisplayName = target.DisplayName,
-            RepoUrl = target.RepoUrl,
-            RepoRef = target.RepoRef,
-            RepoSubdir = target.RepoSubdir,
-            LocalPath = target.LocalPath,
-            TargetRevision = target.TargetRevision,
-            Mode = target.SyncMode
-        }));
-
-        if (applyResult.IsSuccess)
-        {
-            _teklaStandardService.AppendLog(applyResult.Message);
-            AppendLog(applyResult.Message);
-            target.InstalledVersion = target.TargetVersion;
-            target.InstalledRevision = applyResult.InstalledRevision;
-            target.LastSuccessUtc = DateTimeOffset.UtcNow;
-            target.PendingAfterClose = false;
-            target.LastError = string.Empty;
-            target.LastTechnicalError = string.Empty;
-            _lastTeklaSyncErrorNotice = string.Empty;
-            if (target.Key == "firm")
-            {
-                _teklaBalloonShown = false;
-            }
-            persist(target);
-            summaryLines.Add(target.DisplayName + ": синхронизация выполнена");
-            return;
-        }
-
-        target.LastError = applyResult.Message;
-        target.LastTechnicalError = applyResult.TechnicalDetails;
-        target.PendingAfterClose = false;
-        persist(target);
-        if (!string.IsNullOrWhiteSpace(applyResult.TechnicalDetails))
-        {
-            AppendLog(applyResult.TechnicalDetails);
-        }
-        if (autoApplyIfPossible && !string.IsNullOrWhiteSpace(applyResult.Message))
-        {
-            ShowTeklaSyncFailedBalloon(target.DisplayName, applyResult.Message);
-        }
-        summaryLines.Add(applyResult.Message);
-    }
-
-    private async void TeklaUpdateAction_Click(object sender, RoutedEventArgs e)
-    {
-        if (_teklaCheckInProgress)
-        {
-            ThemedDialogs.Show(
-                this,
-                "Синхронизация уже выполняется. Дождитесь завершения текущей операции",
-                "Стандарт Tekla",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
-        }
-
-        var progressWindow = new OperationProgressWindow("Синхронизация Tekla", "Проверяем и обновляем локальные папки");
-        progressWindow.Owner = this;
-        progressWindow.Show();
-        try
-        {
-            var summaryLines = await RunTeklaSyncCycleAsync(
-                showDialogs: false,
-                forceRefresh: true,
-                autoApplyIfPossible: true,
-                progressReporter: progressWindow);
-
-            var resultText = summaryLines.Count == 0
-                ? "Синхронизация завершена"
-                : string.Join(Environment.NewLine, summaryLines);
-            if (HasTeklaSyncErrors())
-            {
-                progressWindow.MarkFailed(resultText);
-            }
-            else
-            {
-                progressWindow.MarkSucceeded(resultText);
-            }
-        }
-        catch (Exception ex)
-        {
-            progressWindow.MarkFailed(ex.Message);
-        }
-    }
-
-    private void TeklaOpenFolder_Click(object sender, RoutedEventArgs e)
-    {
-        OpenTeklaFolder(
-            string.IsNullOrWhiteSpace(_settings.TeklaStandardLocalPath) ? DefaultTeklaStandardLocalPath : _settings.TeklaStandardLocalPath.Trim(),
-            "Папка фирмы Tekla");
-    }
-
-    private void TeklaFirmBrowse_Click(object sender, RoutedEventArgs e)
-    {
-        BrowseLocalTeklaFolder(
-            "Выберите локальную папку фирмы Tekla",
-            TeklaFirmLocalPathTextBox,
-            path => _settings.TeklaStandardLocalPath = path,
-            "папки фирмы");
-    }
-
-    private void TeklaExtensionsOpenFolder_Click(object sender, RoutedEventArgs e)
-    {
-        OpenTeklaFolder(
-            string.IsNullOrWhiteSpace(_settings.TeklaExtensionsLocalPath) ? DefaultTeklaExtensionsLocalPath : _settings.TeklaExtensionsLocalPath.Trim(),
-            "Extensions Tekla");
-    }
-
-    private void TeklaExtensionsBrowse_Click(object sender, RoutedEventArgs e)
-    {
-        BrowseLocalTeklaFolder(
-            "Выберите локальную папку Extensions для Tekla",
-            TeklaExtensionsLocalPathTextBox,
-            path => _settings.TeklaExtensionsLocalPath = path,
-            "Extensions");
-    }
-
-    private void TeklaLibrariesOpenFolder_Click(object sender, RoutedEventArgs e)
-    {
-        OpenTeklaFolder(
-            string.IsNullOrWhiteSpace(_settings.TeklaLibrariesLocalPath) ? DefaultTeklaLibrariesLocalPath : _settings.TeklaLibrariesLocalPath.Trim(),
-            "Grasshopper Libraries");
-    }
-
-    private void TeklaLibrariesBrowse_Click(object sender, RoutedEventArgs e)
-    {
-        BrowseLocalTeklaFolder(
-            "Выберите локальную папку Grasshopper Libraries",
-            TeklaLibrariesLocalPathTextBox,
-            path => _settings.TeklaLibrariesLocalPath = path,
-            "Libraries");
-    }
-
-    private void BrowseLocalTeklaFolder(
-        string description,
-        System.Windows.Controls.TextBox targetTextBox,
-        Action<string> applyPath,
-        string label)
-    {
-        try
-        {
-            using var dialog = new Forms.FolderBrowserDialog
-            {
-                Description = description,
-                ShowNewFolderButton = true,
-                SelectedPath = (targetTextBox.Text ?? string.Empty).Trim()
-            };
-
-            if (dialog.ShowDialog() == Forms.DialogResult.OK)
-            {
-                targetTextBox.Text = dialog.SelectedPath;
-                applyPath(dialog.SelectedPath);
-                _settingsService.Save(_settings);
-                UpdateTeklaUi();
-            }
-        }
-        catch (Exception ex)
-        {
-            AppendLog("Ошибка выбора папки " + label + ": " + ex.Message);
-            ThemedDialogs.Show(this, ex.Message, "Стандарт Tekla", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void OpenTeklaFolder(string folderPath, string label)
-    {
-        try
-        {
-            Directory.CreateDirectory(folderPath);
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "explorer.exe",
-                Arguments = folderPath,
-                UseShellExecute = true
-            });
-            AppendLog("Открыта папка " + label + ": " + folderPath);
-        }
-        catch (Exception ex)
-        {
-            AppendLog("Ошибка открытия папки " + label + ": " + ex.Message);
-            ThemedDialogs.Show(this, ex.Message, "Стандарт Tekla", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void NormalizeTeklaSettings()
-    {
-        _settings.TeklaStandardManifestUrl = string.IsNullOrWhiteSpace(_settings.TeklaStandardManifestUrl)
-            ? FixedTeklaStandardManifestUrl
-            : _settings.TeklaStandardManifestUrl;
-        _settings.TeklaStandardLocalPath = string.IsNullOrWhiteSpace(_settings.TeklaStandardLocalPath)
-            ? DefaultTeklaStandardLocalPath
-            : _settings.TeklaStandardLocalPath;
-        _settings.TeklaExtensionsManifestUrl = string.IsNullOrWhiteSpace(_settings.TeklaExtensionsManifestUrl)
-            ? FixedTeklaExtensionsManifestUrl
-            : _settings.TeklaExtensionsManifestUrl;
-        _settings.TeklaExtensionsLocalPath = string.IsNullOrWhiteSpace(_settings.TeklaExtensionsLocalPath)
-            ? DefaultTeklaExtensionsLocalPath
-            : _settings.TeklaExtensionsLocalPath;
-        _settings.TeklaLibrariesManifestUrl = string.IsNullOrWhiteSpace(_settings.TeklaLibrariesManifestUrl)
-            ? FixedTeklaLibrariesManifestUrl
-            : _settings.TeklaLibrariesManifestUrl;
-        _settings.TeklaLibrariesLocalPath = string.IsNullOrWhiteSpace(_settings.TeklaLibrariesLocalPath)
-            ? DefaultTeklaLibrariesLocalPath
-            : _settings.TeklaLibrariesLocalPath;
-        _settings.TeklaPublishSourcePath =
-            string.IsNullOrWhiteSpace(_settings.TeklaPublishSourcePath) ||
-            string.Equals(_settings.TeklaPublishSourcePath, @"\\62.113.36.107\BIM_Models\Tekla\XS_FIRM", StringComparison.OrdinalIgnoreCase)
-            ? DefaultTeklaPublishSourcePath
-            : _settings.TeklaPublishSourcePath;
-        _settings.TeklaExtensionsPublishSourcePath =
-            string.IsNullOrWhiteSpace(_settings.TeklaExtensionsPublishSourcePath) ||
-            string.Equals(_settings.TeklaExtensionsPublishSourcePath, @"\\62.113.36.107\BIM_Models\Tekla\Extension", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(_settings.TeklaExtensionsPublishSourcePath, @"\\62.113.36.107\BIM_Models\Tekla\Extensions", StringComparison.OrdinalIgnoreCase)
-            ? DefaultTeklaExtensionsPublishSourcePath
-            : _settings.TeklaExtensionsPublishSourcePath;
-        _settings.TeklaLibrariesPublishSourcePath = string.IsNullOrWhiteSpace(_settings.TeklaLibrariesPublishSourcePath)
-            ? DefaultTeklaLibrariesPublishSourcePath
-            : _settings.TeklaLibrariesPublishSourcePath;
-    }
-
-    private void ApplyAndPersistTeklaPathsOnly()
-    {
-        var firmPath = (TeklaFirmLocalPathTextBox.Text ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(firmPath))
-        {
-            _settings.TeklaStandardLocalPath = firmPath;
-        }
-
-        var extensionsPath = (TeklaExtensionsLocalPathTextBox.Text ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(extensionsPath))
-        {
-            _settings.TeklaExtensionsLocalPath = extensionsPath;
-        }
-
-        var librariesPath = (TeklaLibrariesLocalPathTextBox.Text ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(librariesPath))
-        {
-            _settings.TeklaLibrariesLocalPath = librariesPath;
-        }
-
-        var firmPublishSourcePath = (TeklaPublishFirmSourcePathTextBox.Text ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(firmPublishSourcePath))
-        {
-            _settings.TeklaPublishSourcePath = firmPublishSourcePath;
-        }
-
-        var extensionsPublishSourcePath = (TeklaPublishExtensionsSourcePathTextBox.Text ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(extensionsPublishSourcePath))
-        {
-            _settings.TeklaExtensionsPublishSourcePath = extensionsPublishSourcePath;
-        }
-
-        var librariesPublishSourcePath = (TeklaPublishLibrariesSourcePathTextBox.Text ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(librariesPublishSourcePath))
-        {
-            _settings.TeklaLibrariesPublishSourcePath = librariesPublishSourcePath;
-        }
-    }
-
-    private TeklaManagedTargetState CreateFirmTargetState()
-    {
-        return new TeklaManagedTargetState
-        {
-            Key = "firm",
-            DisplayName = "Папка фирмы Tekla",
-            ManifestUrl = _settings.TeklaStandardManifestUrl,
-            LocalPath = _settings.TeklaStandardLocalPath,
-            InstalledVersion = _settings.TeklaStandardInstalledVersion,
-            TargetVersion = _settings.TeklaStandardTargetVersion,
-            InstalledRevision = _settings.TeklaStandardInstalledRevision,
-            TargetRevision = _settings.TeklaStandardTargetRevision,
-            LastCheckUtc = _settings.TeklaStandardLastCheckUtc,
-            LastSuccessUtc = _settings.TeklaStandardLastSuccessUtc,
-            PendingAfterClose = _settings.TeklaStandardPendingAfterClose,
-            LastError = _settings.TeklaStandardLastError,
-            LastTechnicalError = _settings.TeklaStandardLastTechnicalError,
-            RepoUrl = _settings.TeklaStandardRepoUrl,
-            RepoRef = _settings.TeklaStandardRepoRef,
-            RepoSubdir = _settings.TeklaStandardRepoSubdir,
-            SyncMode = TeklaManagedSyncMode.Strict,
-            DelayWhenTeklaRunning = true
-        };
-    }
-
-    private void ApplyFirmTargetState(TeklaManagedTargetState target)
-    {
-        _settings.TeklaStandardManifestUrl = target.ManifestUrl;
-        _settings.TeklaStandardLocalPath = target.LocalPath;
-        _settings.TeklaStandardInstalledVersion = target.InstalledVersion;
-        _settings.TeklaStandardTargetVersion = target.TargetVersion;
-        _settings.TeklaStandardInstalledRevision = target.InstalledRevision;
-        _settings.TeklaStandardTargetRevision = target.TargetRevision;
-        _settings.TeklaStandardLastCheckUtc = target.LastCheckUtc;
-        _settings.TeklaStandardLastSuccessUtc = target.LastSuccessUtc;
-        _settings.TeklaStandardPendingAfterClose = target.PendingAfterClose;
-        _settings.TeklaStandardLastError = target.LastError;
-        _settings.TeklaStandardLastTechnicalError = target.LastTechnicalError;
-        _settings.TeklaStandardRepoUrl = target.RepoUrl;
-        _settings.TeklaStandardRepoRef = target.RepoRef;
-        _settings.TeklaStandardRepoSubdir = target.RepoSubdir;
-        TeklaStatusTextBlock.Text = BuildFirmStatusText();
-    }
-
-    private TeklaManagedTargetState CreateExtensionsTargetState()
-    {
-        return new TeklaManagedTargetState
-        {
-            Key = "extensions",
-            DisplayName = "Extensions Tekla",
-            ManifestUrl = _settings.TeklaExtensionsManifestUrl,
-            LocalPath = _settings.TeklaExtensionsLocalPath,
-            InstalledVersion = _settings.TeklaExtensionsInstalledVersion,
-            TargetVersion = _settings.TeklaExtensionsTargetVersion,
-            InstalledRevision = _settings.TeklaExtensionsInstalledRevision,
-            TargetRevision = _settings.TeklaExtensionsTargetRevision,
-            LastCheckUtc = _settings.TeklaExtensionsLastCheckUtc,
-            LastSuccessUtc = _settings.TeklaExtensionsLastSuccessUtc,
-            PendingAfterClose = _settings.TeklaExtensionsPendingAfterClose,
-            LastError = _settings.TeklaExtensionsLastError,
-            LastTechnicalError = _settings.TeklaExtensionsLastTechnicalError,
-            RepoUrl = _settings.TeklaExtensionsRepoUrl,
-            RepoRef = _settings.TeklaExtensionsRepoRef,
-            RepoSubdir = _settings.TeklaExtensionsRepoSubdir,
-            SyncMode = TeklaManagedSyncMode.OverlayNoDelete,
-            DelayWhenTeklaRunning = true
-        };
-    }
-
-    private void ApplyExtensionsTargetState(TeklaManagedTargetState target)
-    {
-        _settings.TeklaExtensionsManifestUrl = target.ManifestUrl;
-        _settings.TeklaExtensionsLocalPath = target.LocalPath;
-        _settings.TeklaExtensionsInstalledVersion = target.InstalledVersion;
-        _settings.TeklaExtensionsTargetVersion = target.TargetVersion;
-        _settings.TeklaExtensionsInstalledRevision = target.InstalledRevision;
-        _settings.TeklaExtensionsTargetRevision = target.TargetRevision;
-        _settings.TeklaExtensionsLastCheckUtc = target.LastCheckUtc;
-        _settings.TeklaExtensionsLastSuccessUtc = target.LastSuccessUtc;
-        _settings.TeklaExtensionsPendingAfterClose = target.PendingAfterClose;
-        _settings.TeklaExtensionsLastError = target.LastError;
-        _settings.TeklaExtensionsLastTechnicalError = target.LastTechnicalError;
-        _settings.TeklaExtensionsRepoUrl = target.RepoUrl;
-        _settings.TeklaExtensionsRepoRef = target.RepoRef;
-        _settings.TeklaExtensionsRepoSubdir = target.RepoSubdir;
-        TeklaExtensionsStatusTextBlock.Text = BuildExtensionsStatusText();
-    }
-
-    private TeklaManagedTargetState CreateLibrariesTargetState()
-    {
-        return new TeklaManagedTargetState
-        {
-            Key = "libraries",
-            DisplayName = "Grasshopper Libraries",
-            ManifestUrl = _settings.TeklaLibrariesManifestUrl,
-            LocalPath = _settings.TeklaLibrariesLocalPath,
-            InstalledVersion = _settings.TeklaLibrariesInstalledVersion,
-            TargetVersion = _settings.TeklaLibrariesTargetVersion,
-            InstalledRevision = _settings.TeklaLibrariesInstalledRevision,
-            TargetRevision = _settings.TeklaLibrariesTargetRevision,
-            LastCheckUtc = _settings.TeklaLibrariesLastCheckUtc,
-            LastSuccessUtc = _settings.TeklaLibrariesLastSuccessUtc,
-            PendingAfterClose = _settings.TeklaLibrariesPendingAfterClose,
-            LastError = _settings.TeklaLibrariesLastError,
-            LastTechnicalError = _settings.TeklaLibrariesLastTechnicalError,
-            RepoUrl = _settings.TeklaLibrariesRepoUrl,
-            RepoRef = _settings.TeklaLibrariesRepoRef,
-            RepoSubdir = _settings.TeklaLibrariesRepoSubdir,
-            SyncMode = TeklaManagedSyncMode.OverlayNoDelete,
-            DelayWhenTeklaRunning = false
-        };
-    }
-
-    private void ApplyLibrariesTargetState(TeklaManagedTargetState target)
-    {
-        _settings.TeklaLibrariesManifestUrl = target.ManifestUrl;
-        _settings.TeklaLibrariesLocalPath = target.LocalPath;
-        _settings.TeklaLibrariesInstalledVersion = target.InstalledVersion;
-        _settings.TeklaLibrariesTargetVersion = target.TargetVersion;
-        _settings.TeklaLibrariesInstalledRevision = target.InstalledRevision;
-        _settings.TeklaLibrariesTargetRevision = target.TargetRevision;
-        _settings.TeklaLibrariesLastCheckUtc = target.LastCheckUtc;
-        _settings.TeklaLibrariesLastSuccessUtc = target.LastSuccessUtc;
-        _settings.TeklaLibrariesPendingAfterClose = target.PendingAfterClose;
-        _settings.TeklaLibrariesLastError = target.LastError;
-        _settings.TeklaLibrariesLastTechnicalError = target.LastTechnicalError;
-        _settings.TeklaLibrariesRepoUrl = target.RepoUrl;
-        _settings.TeklaLibrariesRepoRef = target.RepoRef;
-        _settings.TeklaLibrariesRepoSubdir = target.RepoSubdir;
-        TeklaLibrariesStatusTextBlock.Text = BuildLibrariesStatusText();
-    }
-
-    private string BuildFirmStatusText()
-    {
-        if (_settings.TeklaStandardPendingAfterClose)
-        {
-            return "Папка фирмы: обновление подготовлено и будет применено после закрытия Tekla";
-        }
-
-        if (string.Equals(_settings.TeklaStandardLastError, "manifest_not_received", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Папка фирмы: не удалось получить данные обновления с сервера";
-        }
-
-        if (!string.IsNullOrWhiteSpace(_settings.TeklaStandardLastError))
-        {
-            return _settings.TeklaStandardLastError;
-        }
-
-        if (_teklaStandardService.IsUpdateAvailable(_settings.TeklaStandardInstalledRevision, _settings.TeklaStandardTargetRevision))
-        {
-            var currentRevision = string.IsNullOrWhiteSpace(_settings.TeklaStandardInstalledRevision)
-                ? "не установлена"
-                : _settings.TeklaStandardInstalledRevision;
-            return "Папка фирмы: требуется обновление до ревизии " + _settings.TeklaStandardTargetRevision + " (сейчас " + currentRevision + ")";
-        }
-
-        if (!string.IsNullOrWhiteSpace(_settings.TeklaStandardInstalledRevision))
-        {
-            return "Папка фирмы: актуально (" + _settings.TeklaStandardInstalledRevision + ")";
-        }
-
-        return "Папка фирмы: проверка еще не выполнялась";
-    }
-
-    private string BuildExtensionsStatusText()
-    {
-        if (_settings.TeklaExtensionsPendingAfterClose)
-        {
-            return "Пользовательские приложения: обновление подготовлено и будет применено после закрытия Tekla";
-        }
-
-        if (string.Equals(_settings.TeklaExtensionsLastError, "manifest_not_received", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Пользовательские приложения: не удалось получить данные обновления с сервера";
-        }
-
-        if (!string.IsNullOrWhiteSpace(_settings.TeklaExtensionsLastError))
-        {
-            return _settings.TeklaExtensionsLastError;
-        }
-
-        if (_teklaStandardService.IsUpdateAvailable(_settings.TeklaExtensionsInstalledRevision, _settings.TeklaExtensionsTargetRevision))
-        {
-            var currentRevision = string.IsNullOrWhiteSpace(_settings.TeklaExtensionsInstalledRevision)
-                ? "не установлена"
-                : _settings.TeklaExtensionsInstalledRevision;
-            return "Пользовательские приложения: требуется обновление до ревизии " + _settings.TeklaExtensionsTargetRevision + " (сейчас " + currentRevision + ")";
-        }
-
-        if (!string.IsNullOrWhiteSpace(_settings.TeklaExtensionsInstalledRevision))
-        {
-            return "Пользовательские приложения: актуально (" + _settings.TeklaExtensionsInstalledRevision + ")";
-        }
-
-        return "Пользовательские приложения: проверка еще не выполнялась";
-    }
-
-    private string BuildLibrariesStatusText()
-    {
-        if (_settings.TeklaLibrariesPendingAfterClose)
-        {
-            return "Grasshopper Libraries: обновление подготовлено и будет применено автоматически";
-        }
-
-        if (string.Equals(_settings.TeklaLibrariesLastError, "manifest_not_received", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Grasshopper Libraries: не удалось получить данные обновления с сервера";
-        }
-
-        if (!string.IsNullOrWhiteSpace(_settings.TeklaLibrariesLastError))
-        {
-            return _settings.TeklaLibrariesLastError;
-        }
-
-        if (_teklaStandardService.IsUpdateAvailable(_settings.TeklaLibrariesInstalledRevision, _settings.TeklaLibrariesTargetRevision))
-        {
-            var currentRevision = string.IsNullOrWhiteSpace(_settings.TeklaLibrariesInstalledRevision)
-                ? "не установлена"
-                : _settings.TeklaLibrariesInstalledRevision;
-            return "Grasshopper Libraries: требуется обновление до ревизии " + _settings.TeklaLibrariesTargetRevision + " (сейчас " + currentRevision + ")";
-        }
-
-        if (!string.IsNullOrWhiteSpace(_settings.TeklaLibrariesInstalledRevision))
-        {
-            return "Grasshopper Libraries: актуально (" + _settings.TeklaLibrariesInstalledRevision + ")";
-        }
-
-        return "Grasshopper Libraries: проверка еще не выполнялась";
     }
 
     private static string FirstNonEmpty(params string[] values)
@@ -2715,13 +1548,6 @@ public partial class MainWindow : Window
         return string.Empty;
     }
 
-    private bool HasTeklaSyncErrors()
-    {
-        return !string.IsNullOrWhiteSpace(_settings.TeklaStandardLastError) ||
-               !string.IsNullOrWhiteSpace(_settings.TeklaExtensionsLastError) ||
-               !string.IsNullOrWhiteSpace(_settings.TeklaLibrariesLastError);
-    }
-
     private static string GetTeklaTargetDisplayName(string target)
     {
         return target switch
@@ -2732,303 +1558,9 @@ public partial class MainWindow : Window
         };
     }
 
-    private sealed class TeklaPublishTargetSelection
-    {
-        public string TargetKey { get; init; } = "";
-        public string DisplayName { get; init; } = "";
-        public string SourcePath { get; init; } = "";
-    }
-
-    private List<TeklaPublishTargetSelection> GetSelectedPublishTargets()
-    {
-        var targets = new List<TeklaPublishTargetSelection>();
-
-        if (PublishFirmCheckBox.IsChecked == true)
-        {
-            targets.Add(new TeklaPublishTargetSelection
-            {
-                TargetKey = "firm",
-                DisplayName = "Папка фирмы",
-                SourcePath = (TeklaPublishFirmSourcePathTextBox.Text ?? string.Empty).Trim()
-            });
-        }
-
-        if (PublishExtensionsCheckBox.IsChecked == true)
-        {
-            targets.Add(new TeklaPublishTargetSelection
-            {
-                TargetKey = "extensions",
-                DisplayName = "Пользовательские приложения",
-                SourcePath = (TeklaPublishExtensionsSourcePathTextBox.Text ?? string.Empty).Trim()
-            });
-        }
-
-        if (PublishLibrariesCheckBox.IsChecked == true)
-        {
-            targets.Add(new TeklaPublishTargetSelection
-            {
-                TargetKey = "libraries",
-                DisplayName = "Grasshopper Libraries",
-                SourcePath = (TeklaPublishLibrariesSourcePathTextBox.Text ?? string.Empty).Trim()
-            });
-        }
-
-        return targets;
-    }
-
-    private void TeklaPublishFirmBrowse_Click(object sender, RoutedEventArgs e)
-    {
-        BrowsePublishSourceFolder("Папка фирмы", TeklaPublishFirmSourcePathTextBox, DefaultTeklaPublishSourcePath, path => _settings.TeklaPublishSourcePath = path);
-    }
-
-    private void TeklaPublishExtensionsBrowse_Click(object sender, RoutedEventArgs e)
-    {
-        BrowsePublishSourceFolder("Пользовательские приложения", TeklaPublishExtensionsSourcePathTextBox, DefaultTeklaExtensionsPublishSourcePath, path => _settings.TeklaExtensionsPublishSourcePath = path);
-    }
-
-    private void TeklaPublishLibrariesBrowse_Click(object sender, RoutedEventArgs e)
-    {
-        BrowsePublishSourceFolder("Grasshopper Libraries", TeklaPublishLibrariesSourcePathTextBox, DefaultTeklaLibrariesPublishSourcePath, path => _settings.TeklaLibrariesPublishSourcePath = path);
-    }
-
-    private void BrowsePublishSourceFolder(
-        string label,
-        System.Windows.Controls.TextBox targetTextBox,
-        string fallbackPath,
-        Action<string> saveToSettings)
-    {
-        try
-        {
-            using var dialog = new Forms.FolderBrowserDialog
-            {
-                Description = "Выберите эталонную серверную папку для раздела: " + label,
-                ShowNewFolderButton = false,
-                SelectedPath = string.IsNullOrWhiteSpace(targetTextBox.Text)
-                    ? fallbackPath
-                    : targetTextBox.Text.Trim()
-            };
-
-            if (dialog.ShowDialog() != Forms.DialogResult.OK)
-            {
-                return;
-            }
-
-            targetTextBox.Text = dialog.SelectedPath;
-            saveToSettings(dialog.SelectedPath);
-            _settingsService.Save(_settings);
-        }
-        catch (Exception ex)
-        {
-            AppendLog("Ошибка выбора эталонной папки для раздела " + label + ": " + ex.Message);
-            ThemedDialogs.Show(this, ex.Message, "Стандарт Tekla", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void TeklaOpenLog_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (!File.Exists(_teklaStandardService.LogFilePath))
-            {
-                File.WriteAllText(_teklaStandardService.LogFilePath, string.Empty);
-            }
-
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "explorer.exe",
-                Arguments = "/select,\"" + _teklaStandardService.LogFilePath + "\"",
-                UseShellExecute = true
-            });
-            AppendLog("Открыт лог Стандарт Tekla: " + _teklaStandardService.LogFilePath);
-        }
-        catch (Exception ex)
-        {
-            AppendLog("Ошибка открытия лога Стандарт Tekla: " + ex.Message);
-            ThemedDialogs.Show(this, ex.Message, "Стандарт Tekla", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private async void TeklaPublish_Click(object sender, RoutedEventArgs e)
-    {
-        OperationProgressWindow? progressWindow = null;
-        try
-        {
-            if (!_settings.IsFirmAdmin)
-            {
-                throw new InvalidOperationException("Публикация доступна только для роли admin_firm.");
-            }
-
-            var token = SettingsService.DecryptToken(_settings.TokenCipherBase64).Trim();
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                throw new InvalidOperationException("Токен устройства не найден. Выполните подключение по токену.");
-            }
-
-            var selectedTargets = GetSelectedPublishTargets();
-            if (selectedTargets.Count == 0)
-            {
-                throw new InvalidOperationException("Выберите хотя бы один раздел для публикации.");
-            }
-
-            var publishComment = (TeklaPublishNotesTextBox.Text ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(publishComment))
-            {
-                throw new InvalidOperationException("Комментарий публикации обязателен.");
-            }
-
-            foreach (var selectedTarget in selectedTargets)
-            {
-                if (string.IsNullOrWhiteSpace(selectedTarget.SourcePath))
-                {
-                    throw new InvalidOperationException("Для раздела \"" + selectedTarget.DisplayName + "\" не указан путь к эталонной папке.");
-                }
-            }
-
-            _settings.TeklaPublishSourcePath = (TeklaPublishFirmSourcePathTextBox.Text ?? string.Empty).Trim();
-            _settings.TeklaExtensionsPublishSourcePath = (TeklaPublishExtensionsSourcePathTextBox.Text ?? string.Empty).Trim();
-            _settings.TeklaLibrariesPublishSourcePath = (TeklaPublishLibrariesSourcePathTextBox.Text ?? string.Empty).Trim();
-            _settingsService.Save(_settings);
-
-            var totalSteps = selectedTargets.Count + 3;
-            var currentStep = 0;
-            progressWindow = new OperationProgressWindow("Публикация Tekla", "Подготавливаем публикацию");
-            progressWindow.Owner = this;
-            progressWindow.Show();
-
-            TeklaPublishButton.IsEnabled = false;
-
-            var resultLines = new List<string>();
-            foreach (var selectedTarget in selectedTargets)
-            {
-                currentStep++;
-                progressWindow.UpdateStep(
-                    "Публикуем раздел: " + selectedTarget.DisplayName,
-                    "Идет проверка изменений и подготовка публикации",
-                    currentStep,
-                    totalSteps,
-                    EstimateOperationEta(currentStep, totalSteps));
-
-                var payload = new TeklaManifestPublishPayload
-                {
-                    Target = selectedTarget.TargetKey,
-                    SourcePath = selectedTarget.SourcePath,
-                    Comment = publishComment
-                };
-                var result = await _heartbeatClient.PublishTeklaManifestAsync(_settings.ServerUrl, token, payload, CancellationToken.None);
-
-                if (result.NoChanges)
-                {
-                    resultLines.Add(selectedTarget.DisplayName + ": изменений не найдено");
-                    AppendLog("Публикация " + selectedTarget.TargetKey + ": изменений не обнаружено.");
-                }
-                else
-                {
-                    resultLines.Add(selectedTarget.DisplayName + ": опубликовано, ревизия " + result.Revision);
-                    AppendLog("Публикация " + selectedTarget.TargetKey + ": опубликовано, ревизия " + result.Revision);
-                }
-
-                if (!string.IsNullOrWhiteSpace(result.Message))
-                {
-                    AppendLog(result.Message);
-                }
-            }
-
-            currentStep++;
-            progressWindow.UpdateStep(
-                "Обновляем данные по состоянию",
-                "Сохраняем информацию о публикации",
-                currentStep,
-                totalSteps,
-                EstimateOperationEta(currentStep, totalSteps));
-            _settingsService.Save(_settings);
-
-            currentStep++;
-            progressWindow.UpdateStep(
-                "Запускаем синхронизацию на этом компьютере",
-                "Сейчас локальные папки будут приведены к опубликованному состоянию",
-                currentStep,
-                totalSteps,
-                EstimateOperationEta(currentStep, totalSteps));
-            await RunTeklaSyncCycleAsync(
-                showDialogs: false,
-                forceRefresh: true,
-                autoApplyIfPossible: true);
-
-            currentStep++;
-            progressWindow.UpdateStep(
-                "Готово",
-                "Публикация и синхронизация завершены",
-                currentStep,
-                totalSteps,
-                TimeSpan.Zero);
-            progressWindow.MarkSucceeded(string.Join(Environment.NewLine, resultLines));
-
-            ThemedDialogs.Show(
-                this,
-                "Публикация завершена\n\n" + string.Join(Environment.NewLine, resultLines),
-                "Стандарт Tekla",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            var message = GetFriendlyTeklaPublishErrorMessage(ex);
-            progressWindow?.MarkFailed(message);
-            AppendLog("Ошибка публикации Tekla: " + message);
-            ThemedDialogs.Show(this, message, "Стандарт Tekla", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-        finally
-        {
-            TeklaPublishButton.IsEnabled = _settings.IsFirmAdmin;
-        }
-    }
-
-    private static TimeSpan EstimateOperationEta(int currentStep, int totalSteps)
-    {
-        var remainingSteps = Math.Max(0, totalSteps - currentStep);
-        return TimeSpan.FromSeconds(Math.Max(0, remainingSteps * 12));
-    }
-
-    private void TeklaPublishBrowse_Click(object sender, RoutedEventArgs e)
-    {
-        // Legacy hidden control left for backward XAML compatibility.
-        TeklaPublishFirmBrowse_Click(sender, e);
-    }
-
-    private void TeklaPublishTarget_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
-    {
-        // Legacy hidden control left for backward XAML compatibility.
-    }
-
-    private static string GetFriendlyTeklaPublishErrorMessage(Exception ex)
-    {
-        var message = ex.Message?.Trim() ?? "Неизвестная ошибка публикации.";
-
-        if (message.StartsWith("HTTP 409:", StringComparison.OrdinalIgnoreCase))
-        {
-            return "На сервере уже выполняется публикация. Дождитесь завершения текущей попытки и повторите запуск позже";
-        }
-
-        if (message.StartsWith("HTTP 504:", StringComparison.OrdinalIgnoreCase))
-        {
-            return message[9..].Trim();
-        }
-
-        if (message.StartsWith("HTTP 400:", StringComparison.OrdinalIgnoreCase) ||
-            message.StartsWith("HTTP 500:", StringComparison.OrdinalIgnoreCase))
-        {
-            return message[9..].Trim();
-        }
-
-        return message;
-    }
-
-    private async void RestartTeklaServer_Click(object sender, RoutedEventArgs e)
-    {
-        await RestartManagedServerAsync("tekla", RestartTeklaServerButton, "Tekla Server");
-    }
-
-    private async Task RestartManagedServerAsync(string serviceKey, System.Windows.Controls.Button button, string displayName)
+    // Public so it satisfies IShellHost (the lifted RestartTeklaServer_Click forwards here) and stays callable
+    // by the shell's own Revit-server restart flow. Shared with Revit, so it lives in the shell, not the module.
+    public async Task RestartManagedServerAsync(string serviceKey, System.Windows.Controls.Button button, string displayName)
     {
         try
         {
@@ -3066,7 +1598,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            RestartTeklaServerButton.IsEnabled = _settings.IsSystemAdmin || _settings.IsFirmAdmin;
+            button.IsEnabled = _settings.IsSystemAdmin || _settings.IsFirmAdmin;
         }
     }
 
@@ -3393,7 +1925,8 @@ public partial class MainWindow : Window
         var host = GetSmbHost(sharePath);
         var shareRoot = GetSmbShareRoot(sharePath);
         var loginCandidates = BuildSmbLoginCandidates(login, host);
-        SmbLoginTextBox.Text = loginCandidates.FirstOrDefault() ?? login;
+        // SmbLoginTextBox moved into ConnectorView; push the chosen login candidate across the seam (same value).
+        _connector?.SetSmbLogin(loginCandidates.FirstOrDefault() ?? login);
 
         await Task.Run(() =>
         {
@@ -3454,9 +1987,11 @@ public partial class MainWindow : Window
         {
             ApplyAndPersist();
 
-            var login = SmbLoginTextBox.Text.Trim();
-            var password = SmbPasswordBox.Password.Trim();
-            var sharePath = SmbSharePathTextBox.Text.Trim();
+            // SmbLogin/SmbPassword/SmbSharePath boxes moved into ConnectorView (Collapsed, button unreachable).
+            // Re-source from the in-memory bootstrap creds + _settings (same values the Collapsed boxes carried).
+            var login = (_lastSmbLogin ?? string.Empty).Trim();
+            var password = (_lastSmbPassword ?? string.Empty).Trim();
+            var sharePath = (_settings.SmbSharePath ?? string.Empty).Trim();
             await ConnectSmbInternalAsync(login, password, sharePath, openExplorer: true);
         }
         catch (Exception ex)
@@ -3470,7 +2005,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            var sharePath = SmbSharePathTextBox.Text.Trim();
+            // SmbSharePathTextBox moved into ConnectorView (Collapsed, button unreachable); re-source from _settings.
+            var sharePath = (_settings.SmbSharePath ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(sharePath))
             {
                 throw new InvalidOperationException("Укажите путь SMB папки.");
