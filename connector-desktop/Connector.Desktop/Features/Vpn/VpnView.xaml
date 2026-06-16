@@ -1,0 +1,41 @@
+<UserControl x:Class="Connector.Desktop.Features.Vpn.VpnView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="Transparent">
+    <!-- Passive view: DataContext is a VpnViewModel supplied by VpnModule. Buttons bind to commands; status text
+         and colour bind to VM state. Shared dark-theme keys (CardStyle/PrimaryButton/SecondaryButton) come from
+         the app-global Resources/Theme.xaml — no self-contained styles here. -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Border Style="{StaticResource CardStyle}" Margin="12,10,12,12">
+            <StackPanel>
+                <TextBlock Text="Доступ к общей папке вне офиса" FontSize="19" FontWeight="SemiBold" />
+                <TextBlock Text="Если провайдер блокирует доступ к общей папке (порт 445), Connector может включить защищённый VPN-канал до сервера. Папка станет доступна из любой сети. VPN заворачивает только трафик к серверу фирмы — обычный интернет и другие ваши VPN не затрагиваются."
+                           Margin="0,6,0,14" Foreground="#A9BBD3" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding StatusLine}" Foreground="{Binding StatusBrush}" Margin="0,0,0,8" TextWrapping="Wrap" />
+
+                <Border Padding="10" BorderBrush="#2A3E5C" BorderThickness="1" CornerRadius="10" Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Text="Путь к общей папке через VPN:" Foreground="#92A5C3" />
+                        <TextBlock Text="{Binding ShareUnc}" Margin="0,4,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+
+                <Border Padding="10" BorderBrush="#5A4A2A" BorderThickness="1" CornerRadius="10" Margin="0,0,0,12">
+                    <TextBlock Text="При первом включении Windows один раз попросит подтвердить права администратора (UAC) — это нужно для установки VPN-туннеля. Дальше VPN поднимается сам и переживает перезагрузки."
+                               Foreground="#D8C28A" TextWrapping="Wrap" />
+                </Border>
+
+                <WrapPanel>
+                    <Button Style="{StaticResource PrimaryButton}" Content="{Binding EnableButtonText}"
+                            Command="{Binding EnableCommand}" IsEnabled="{Binding CanEnable}" />
+                    <Button Style="{StaticResource SecondaryButton}" Content="Открыть общую папку"
+                            Command="{Binding OpenFolderCommand}" IsEnabled="{Binding CanOpenFolder}" />
+                    <Button Style="{StaticResource SecondaryButton}" Content="Отключить VPN"
+                            Command="{Binding DisableCommand}" IsEnabled="{Binding CanDisable}" />
+                    <Button Style="{StaticResource SecondaryButton}" Content="Открыть лог"
+                            Command="{Binding OpenLogCommand}" />
+                </WrapPanel>
+            </StackPanel>
+        </Border>
+    </ScrollViewer>
+</UserControl>

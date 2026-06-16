@@ -1,0 +1,55 @@
+<UserControl x:Class="Connector.Desktop.Features.Attributes.AttributesView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="Transparent">
+    <!-- Placeholder view for the future "Атрибуты" domain. The roadmap items below become their own
+         IFeatureModule sub-tabs (mapping / validation / filling / IDS-КСИ) — registered in ShellViewModel,
+         exactly like the Tekla domain hosts its modules. Uses the app-wide Theme.xaml keyed styles. -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Border Style="{StaticResource CardStyle}" Margin="12,10,12,12">
+            <StackPanel>
+                <TextBlock Text="Атрибуты моделей" FontSize="19" FontWeight="SemiBold" />
+                <TextBlock Text="Рабочая область для атрибутивных данных моделей. Модули добавляются по мере готовности — каждый встанет отдельной подвкладкой этого домена."
+                           Margin="0,6,0,16"
+                           Foreground="#A9BBD3"
+                           TextWrapping="Wrap" />
+
+                <Border Padding="14" BorderBrush="#2A3E5C" BorderThickness="1" CornerRadius="12" Margin="0,0,0,10">
+                    <StackPanel>
+                        <TextBlock Text="Маппинг атрибутов" FontWeight="SemiBold" FontSize="16" />
+                        <TextBlock Text="Сопоставление атрибутов модели с целевой схемой (наборы свойств, КСИ-классы, экспортные поля)."
+                                   Foreground="#A9BBD3" Margin="0,6,0,0" TextWrapping="Wrap" />
+                        <TextBlock Text="В разработке" Foreground="#D8C28A" Margin="0,8,0,0" FontWeight="SemiBold" />
+                    </StackPanel>
+                </Border>
+
+                <Border Padding="14" BorderBrush="#2A3E5C" BorderThickness="1" CornerRadius="12" Margin="0,0,0,10">
+                    <StackPanel>
+                        <TextBlock Text="Проверка маппинга" FontWeight="SemiBold" FontSize="16" />
+                        <TextBlock Text="Валидация заполненности и корректности атрибутов по правилам перед выгрузкой."
+                                   Foreground="#A9BBD3" Margin="0,6,0,0" TextWrapping="Wrap" />
+                        <TextBlock Text="В разработке" Foreground="#D8C28A" Margin="0,8,0,0" FontWeight="SemiBold" />
+                    </StackPanel>
+                </Border>
+
+                <Border Padding="14" BorderBrush="#2A3E5C" BorderThickness="1" CornerRadius="12" Margin="0,0,0,10">
+                    <StackPanel>
+                        <TextBlock Text="Заполнение атрибутов" FontWeight="SemiBold" FontSize="16" />
+                        <TextBlock Text="Пакетное заполнение/обновление атрибутов в модели по сопоставлению и справочникам."
+                                   Foreground="#A9BBD3" Margin="0,6,0,0" TextWrapping="Wrap" />
+                        <TextBlock Text="В разработке" Foreground="#D8C28A" Margin="0,8,0,0" FontWeight="SemiBold" />
+                    </StackPanel>
+                </Border>
+
+                <Border Padding="14" BorderBrush="#2A3E5C" BorderThickness="1" CornerRadius="12" Margin="0,0,0,0">
+                    <StackPanel>
+                        <TextBlock Text="Формирование по КСИ" FontWeight="SemiBold" FontSize="16" />
+                        <TextBlock Text="Подготовка атрибутивного состава моделей под требования КСИ (классификатор строительной информации)."
+                                   Foreground="#A9BBD3" Margin="0,6,0,0" TextWrapping="Wrap" />
+                        <TextBlock Text="В разработке" Foreground="#D8C28A" Margin="0,8,0,0" FontWeight="SemiBold" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Border>
+    </ScrollViewer>
+</UserControl>

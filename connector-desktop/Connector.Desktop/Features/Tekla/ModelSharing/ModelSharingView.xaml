@@ -1,0 +1,60 @@
+<UserControl x:Class="Connector.Desktop.Features.Tekla.ModelSharing.ModelSharingView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="Transparent">
+    <!-- No self-contained styles: the keyed styles (CardStyle, PrimaryButton, SecondaryButton) are app-wide,
+         and the implicit TextBox/TextBlock styles apply automatically when hosted inside MainWindow. -->
+    <!-- self-wraps in ScrollViewer + CardStyle so the Tekla TabControl can host it via a bare ContentControl
+         (data-driven nav), consistent with the other Tekla module views. -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Border Style="{StaticResource CardStyle}" Margin="12,10,12,12">
+        <StackPanel>
+            <TextBlock Text="Model Sharing" FontSize="19" FontWeight="SemiBold" />
+            <TextBlock Text="Совместная работа над моделями Tekla через собственный сервер фирмы. Connector один раз подготовит Tekla на этом компьютере: включит режим Model Sharing и направит его на сервер. Вход в Trimble не требуется — пользователь определяется по токену устройства."
+                       Margin="0,6,0,14"
+                       Foreground="#A9BBD3"
+                       TextWrapping="Wrap" />
+
+            <!-- status: text + brush bound (replaces ModelSharingStatusTextBlock + code-behind Foreground) -->
+            <TextBlock Text="{Binding StatusLine}"
+                       Foreground="{Binding StatusBrush}"
+                       Margin="0,0,0,6"
+                       TextWrapping="Wrap" />
+            <!-- identity (replaces ModelSharingIdentityTextBlock) -->
+            <TextBlock Text="{Binding IdentityLine}"
+                       Margin="0,0,0,12"
+                       Foreground="#92A5C3"
+                       TextWrapping="Wrap" />
+
+            <Border Padding="12" BorderBrush="#2A3E5C" BorderThickness="1" CornerRadius="12" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="Папка bin Tekla Structures" FontWeight="SemiBold" />
+                    <TextBlock Text="Папка, где находится Features\SharingUIFeature.dll. Обычно определяется автоматически — меняйте только если установлено несколько версий Tekla."
+                               Foreground="#A9BBD3"
+                               Margin="0,4,0,8"
+                               TextWrapping="Wrap" />
+                    <!-- bin path (replaces ModelSharingTeklaBinTextBox) -->
+                    <TextBox Margin="0,0,0,8" Text="{Binding TeklaBin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                    <WrapPanel>
+                        <!-- folder pick stays in code-behind (WinForms dialog), invoked by Browse -->
+                        <Button Style="{StaticResource SecondaryButton}" Content="Выбрать папку" Click="Browse_Click" />
+                    </WrapPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Padding="10" BorderBrush="#5A4A2A" BorderThickness="1" CornerRadius="10" Margin="0,0,0,12">
+                <TextBlock Text="Перед настройкой закройте Tekla Structures — иначе файл будет занят. После обновления Tekla (Service Pack) настройку нужно запустить повторно."
+                           Foreground="#D8C28A"
+                           TextWrapping="Wrap" />
+            </Border>
+
+            <WrapPanel>
+                <Button Style="{StaticResource PrimaryButton}" Content="Настроить Model Sharing на этом ПК" Command="{Binding SetupCommand}" />
+                <Button Style="{StaticResource SecondaryButton}" Content="Открыть лог" Command="{Binding OpenLogCommand}" />
+            </WrapPanel>
+
+            <TextBlock Text="{Binding ResultMessage}" TextWrapping="Wrap" Foreground="#A9BBD3" Margin="0,12,0,0" />
+        </StackPanel>
+        </Border>
+    </ScrollViewer>
+</UserControl>
