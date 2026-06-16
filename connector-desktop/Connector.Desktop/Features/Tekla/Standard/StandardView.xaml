@@ -1,0 +1,263 @@
+<UserControl x:Class="Connector.Desktop.Features.Tekla.Standard.StandardView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="Transparent">
+    <!-- LIFTED VERBATIM from MainWindow.xaml's <TabItem Header="Стандарт"> inner content (the ScrollViewer +
+         CardStyle Border + 3-section inner TabControl + server-actions panel + admin publish panel). The keyed
+         styles ({StaticResource CardStyle/SecondaryButton/SyncButton/PublishButton}) live app-globally in
+         Resources/Theme.xaml; the implicit TextBox/TextBlock/Label/CheckBox styles come from MainWindow.Window.Resources
+         via resource inheritance when this control is hosted inside MainWindow's StandardHost. Do NOT add styles here. -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Border Style="{StaticResource CardStyle}" Margin="12,10,12,12">
+            <StackPanel>
+                <TextBlock Text="Менеджер Tekla Sync" FontSize="19" FontWeight="SemiBold" />
+                <TextBlock Text="Connector автоматически поддерживает локальные папки Tekla в актуальном состоянии. Выберите раздел ниже, чтобы посмотреть статус и при необходимости изменить путь на этом компьютере."
+                           Margin="0,6,0,14"
+                           Foreground="#A9BBD3"
+                           TextWrapping="Wrap" />
+                <TextBlock x:Name="TeklaOverallStatusTextBlock"
+                           Text="Общий статус Tekla Sync: проверка еще не выполнялась"
+                           Margin="0,0,0,12"
+                           Foreground="#A9BBD3"
+                           TextWrapping="Wrap" />
+
+                <TabControl Margin="0,0,0,12">
+                    <TabItem Header="Папка фирмы">
+                        <Border Padding="12" BorderBrush="#2A3E5C" BorderThickness="1" CornerRadius="12" Margin="0,0,0,12">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="230" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="Папка фирмы" FontWeight="SemiBold" FontSize="16" />
+
+                                <Label Grid.Row="1" Grid.Column="0" Content="Состояние" VerticalAlignment="Top" />
+                                <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,2,0,10">
+                                    <TextBlock x:Name="TeklaStatusTextBlock" Text="Папка фирмы: не проверялось" Foreground="#A9BBD3" TextWrapping="Wrap" />
+                                    <TextBlock Text="Эта папка синхронизируется строго: локальное содержимое приводится к опубликованному стандарту." Foreground="#A9BBD3" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="TeklaRoleTextBlock" Text="Роль администратора: нет" Visibility="Collapsed" />
+                                </StackPanel>
+
+                                <Label Grid.Row="2" Grid.Column="0" Content="Ревизия" VerticalAlignment="Center" />
+                                <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="Целевая: " Foreground="#92A5C3" Margin="0,8,4,0" />
+                                    <TextBlock x:Name="TeklaCurrentVersionTextBlock" Margin="0,8,20,0" Text="-" />
+                                    <TextBlock Text="Актуально: " Foreground="#92A5C3" Margin="0,8,4,0" />
+                                    <TextBlock x:Name="TeklaUpToDateTextBlock" Margin="0,8,0,0" Text="нет" />
+                                </StackPanel>
+
+                                <Label Grid.Row="3" Grid.Column="0" Content="Куда копировать" VerticalAlignment="Top" />
+                                <StackPanel Grid.Row="3" Grid.Column="1">
+                                    <TextBox x:Name="TeklaFirmLocalPathTextBox" Margin="0,0,0,8" />
+                                    <WrapPanel>
+                                        <Button x:Name="TeklaFirmBrowseButton" Style="{StaticResource SecondaryButton}" Content="Выбрать папку" Click="TeklaFirmBrowse_Click" />
+                                        <Button x:Name="TeklaFirmOpenFolderButton" Style="{StaticResource SecondaryButton}" Content="Открыть папку фирмы" Click="TeklaOpenFolder_Click" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </TabItem>
+
+                    <TabItem Header="Пользовательские приложения">
+                        <Border Padding="12" BorderBrush="#2A3E5C" BorderThickness="1" CornerRadius="12" Margin="0,0,0,12">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="230" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="Пользовательские приложения" FontWeight="SemiBold" FontSize="16" />
+
+                                <Label Grid.Row="1" Grid.Column="0" Content="Состояние" VerticalAlignment="Top" />
+                                <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,2,0,10">
+                                    <TextBlock x:Name="TeklaExtensionsStatusTextBlock" Text="Пользовательские приложения: проверка еще не выполнялась" Foreground="#A9BBD3" TextWrapping="Wrap" />
+                                    <TextBlock Text="Connector добавляет и обновляет управляемые приложения, но не удаляет ваши локальные файлы." Foreground="#A9BBD3" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                </StackPanel>
+
+                                <Label Grid.Row="2" Grid.Column="0" Content="Ревизия" VerticalAlignment="Center" />
+                                <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="Целевая: " Foreground="#92A5C3" Margin="0,8,4,0" />
+                                    <TextBlock x:Name="TeklaExtensionsCurrentVersionTextBlock" Margin="0,8,20,0" Text="-" />
+                                    <TextBlock Text="Актуально: " Foreground="#92A5C3" Margin="0,8,4,0" />
+                                    <TextBlock x:Name="TeklaExtensionsUpToDateTextBlock" Margin="0,8,0,0" Text="нет" />
+                                </StackPanel>
+
+                                <Label Grid.Row="3" Grid.Column="0" Content="Куда копировать" VerticalAlignment="Top" />
+                                <StackPanel Grid.Row="3" Grid.Column="1">
+                                    <TextBox x:Name="TeklaExtensionsLocalPathTextBox" Margin="0,0,0,8" />
+                                    <WrapPanel>
+                                        <Button x:Name="TeklaExtensionsBrowseButton" Style="{StaticResource SecondaryButton}" Content="Выбрать папку" Click="TeklaExtensionsBrowse_Click" />
+                                        <Button x:Name="TeklaExtensionsOpenFolderButton" Style="{StaticResource SecondaryButton}" Content="Открыть папку Extensions" Click="TeklaExtensionsOpenFolder_Click" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </TabItem>
+
+                    <TabItem Header="Grasshopper Libraries">
+                        <Border Padding="12" BorderBrush="#2A3E5C" BorderThickness="1" CornerRadius="12" Margin="0,0,0,12">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="230" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="Grasshopper Libraries" FontWeight="SemiBold" FontSize="16" />
+
+                                <Label Grid.Row="1" Grid.Column="0" Content="Состояние" VerticalAlignment="Top" />
+                                <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,2,0,10">
+                                    <TextBlock x:Name="TeklaLibrariesStatusTextBlock" Text="Grasshopper Libraries: проверка еще не выполнялась" Foreground="#A9BBD3" TextWrapping="Wrap" />
+                                    <TextBlock Text="Connector добавляет и обновляет общие плагины Grasshopper, не удаляя ваши локальные библиотеки." Foreground="#A9BBD3" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                </StackPanel>
+
+                                <Label Grid.Row="2" Grid.Column="0" Content="Ревизия" VerticalAlignment="Center" />
+                                <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="Целевая: " Foreground="#92A5C3" Margin="0,8,4,0" />
+                                    <TextBlock x:Name="TeklaLibrariesCurrentVersionTextBlock" Margin="0,8,20,0" Text="-" />
+                                    <TextBlock Text="Актуально: " Foreground="#92A5C3" Margin="0,8,4,0" />
+                                    <TextBlock x:Name="TeklaLibrariesUpToDateTextBlock" Margin="0,8,0,0" Text="нет" />
+                                </StackPanel>
+
+                                <Label Grid.Row="3" Grid.Column="0" Content="Куда копировать" VerticalAlignment="Top" />
+                                <StackPanel Grid.Row="3" Grid.Column="1">
+                                    <TextBox x:Name="TeklaLibrariesLocalPathTextBox" Margin="0,0,0,8" />
+                                    <WrapPanel>
+                                        <Button x:Name="TeklaLibrariesBrowseButton" Style="{StaticResource SecondaryButton}" Content="Выбрать папку" Click="TeklaLibrariesBrowse_Click" />
+                                        <Button x:Name="TeklaLibrariesOpenFolderButton" Style="{StaticResource SecondaryButton}" Content="Открыть папку Libraries" Click="TeklaLibrariesOpenFolder_Click" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </TabItem>
+                </TabControl>
+
+                <WrapPanel Margin="0,0,0,12">
+                    <Button x:Name="TeklaCheckButton" Style="{StaticResource SyncButton}" Content="Проверить и синхронизировать Tekla" Click="TeklaUpdateAction_Click" />
+                    <Button x:Name="TeklaOpenLogButton" Style="{StaticResource SecondaryButton}" Content="Открыть лог синхронизации" Click="TeklaOpenLog_Click" />
+                </WrapPanel>
+
+                <Border Margin="0,0,0,12"
+                        Padding="10"
+                        BorderBrush="#2A3E5C"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        x:Name="ServerActionsPanel"
+                        Visibility="Collapsed">
+                    <StackPanel>
+                        <TextBlock Text="Серверные действия" FontWeight="SemiBold" />
+                        <TextBlock Text="Перезапуск Tekla Server из desktop-клиента администратора" Foreground="#A9BBD3" Margin="0,4,0,10" TextWrapping="Wrap" />
+                        <WrapPanel>
+                            <Button x:Name="RestartTeklaServerButton" Style="{StaticResource SecondaryButton}" Content="Перезапустить Tekla Server" Click="RestartTeklaServer_Click" />
+                        </WrapPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Margin="0,0,0,0"
+                        Padding="10"
+                        BorderBrush="#2A3E5C"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        x:Name="TeklaPublishPanel"
+                        Visibility="Collapsed">
+                    <StackPanel>
+                        <TextBlock Text="Публикация обновлений" FontWeight="SemiBold" />
+                        <TextBlock Text="Блок виден только менеджерам. Здесь можно выбрать раздел, указать эталонную серверную папку и сделать публикацию в git."
+                                   Foreground="#A9BBD3"
+                                   Margin="0,4,0,10"
+                                   TextWrapping="Wrap" />
+                        <TextBlock x:Name="TeklaPublishTargetLabelTextBlock" Text="Публикация папки фирмы" FontWeight="SemiBold" />
+                        <TextBlock x:Name="TeklaPublishTargetDescriptionTextBlock" Text="Укажите папку фирмы XS_FIRM и комментарий к обновлению" Foreground="#A9BBD3" Margin="0,4,0,10" TextWrapping="Wrap" />
+
+                        <Border BorderBrush="#2A3E5C" BorderThickness="1" CornerRadius="10" Padding="10" Margin="0,0,0,8">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <CheckBox x:Name="PublishFirmCheckBox" Grid.Row="0" Grid.Column="0" Content="Папка фирмы" IsChecked="True" VerticalAlignment="Center" Margin="0,0,10,8" />
+                                <TextBox x:Name="TeklaPublishFirmSourcePathTextBox" Grid.Row="0" Grid.Column="1" Margin="0,0,8,8" />
+                                <Button x:Name="TeklaPublishFirmBrowseButton"
+                                        Grid.Row="0"
+                                        Grid.Column="2"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Content="Выбрать"
+                                        Click="TeklaPublishFirmBrowse_Click"
+                                        Margin="0,0,0,8" />
+
+                                <CheckBox x:Name="PublishExtensionsCheckBox" Grid.Row="1" Grid.Column="0" Content="Пользовательские приложения" IsChecked="True" VerticalAlignment="Center" Margin="0,0,10,8" />
+                                <TextBox x:Name="TeklaPublishExtensionsSourcePathTextBox" Grid.Row="1" Grid.Column="1" Margin="0,0,8,8" />
+                                <Button x:Name="TeklaPublishExtensionsBrowseButton"
+                                        Grid.Row="1"
+                                        Grid.Column="2"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Content="Выбрать"
+                                        Click="TeklaPublishExtensionsBrowse_Click"
+                                        Margin="0,0,0,8" />
+
+                                <CheckBox x:Name="PublishLibrariesCheckBox" Grid.Row="2" Grid.Column="0" Content="Grasshopper Libraries" IsChecked="True" VerticalAlignment="Center" Margin="0,0,10,0" />
+                                <TextBox x:Name="TeklaPublishLibrariesSourcePathTextBox" Grid.Row="2" Grid.Column="1" Margin="0,0,8,0" />
+                                <Button x:Name="TeklaPublishLibrariesBrowseButton"
+                                        Grid.Row="2"
+                                        Grid.Column="2"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Content="Выбрать"
+                                        Click="TeklaPublishLibrariesBrowse_Click" />
+                            </Grid>
+                        </Border>
+                        <TextBlock Text="По умолчанию включены все три раздела. Публикация запускается один раз и выполняется по очереди."
+                                   Foreground="#A9BBD3"
+                                   Margin="0,0,0,8"
+                                   TextWrapping="Wrap" />
+
+                        <Label Content="Что публикуем" Visibility="Collapsed" />
+                        <ComboBox x:Name="TeklaPublishTargetComboBox" Margin="0,0,0,8" SelectionChanged="TeklaPublishTarget_SelectionChanged" Visibility="Collapsed">
+                            <ComboBoxItem Content="XS_FIRM" Tag="firm" />
+                            <ComboBoxItem Content="Extensions" Tag="extensions" />
+                            <ComboBoxItem Content="Grasshopper Libraries" Tag="libraries" />
+                        </ComboBox>
+
+                        <Label Content="Эталонная серверная папка" Visibility="Collapsed" />
+                        <TextBox x:Name="TeklaPublishSourcePathTextBox" Margin="0,0,0,8" Visibility="Collapsed" />
+
+                        <WrapPanel Margin="0,0,0,8" Visibility="Collapsed">
+                            <Button x:Name="TeklaPublishBrowseButton" Style="{StaticResource SecondaryButton}" Content="Выбрать папку" Click="TeklaPublishBrowse_Click" />
+                        </WrapPanel>
+
+                        <Label Content="Комментарий" />
+                        <TextBox x:Name="TeklaPublishNotesTextBox" Margin="0,0,0,8" MinHeight="72" AcceptsReturn="True" TextWrapping="Wrap" VerticalContentAlignment="Top" />
+
+                        <WrapPanel>
+                            <Button x:Name="TeklaPublishButton" Style="{StaticResource PublishButton}" Content="Запустить публикацию по выбранным разделам" Click="TeklaPublish_Click" />
+                        </WrapPanel>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Border>
+    </ScrollViewer>
+</UserControl>
