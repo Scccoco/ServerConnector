@@ -26,3 +26,6 @@ connector/agent/~ConnectorAgentSetup.CAB
 # Local odd files
 nul
 .tmp/
+
+# Claude Code local session data
+.claude/
