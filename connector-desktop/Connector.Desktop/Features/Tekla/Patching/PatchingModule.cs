@@ -25,6 +25,9 @@ public sealed class PatchingModule : IFeatureModule
     public string Title => "Патчинг";
     public FrameworkElement View => _view;
 
+    // Shell overrides the default owner-less MessageBox with a window-owned themed dialog (app-consistent).
+    public Func<string, bool>? ConfirmHandler { get => _viewModel.ConfirmHandler; set => _viewModel.ConfirmHandler = value; }
+
     public Task OnActivatedAsync()
     {
         _viewModel.RefreshStatus();

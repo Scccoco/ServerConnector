@@ -57,15 +57,17 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
     {
         new()
         {
-            Version = "1.0.25",
-            PublishedAt = "03.06.2026",
+            Version = "1.0.26",
+            PublishedAt = "22.06.2026",
             Title = "Ключевые изменения версии",
             Changes = new[]
             {
-                "Добавлена вкладка «Общая папка (VPN)»: если провайдер блокирует доступ к общей папке (порт 445), можно одной кнопкой включить защищённый VPN-канал до сервера и работать с папкой из любой сети",
-                "Прямой доступ к общей папке (как раньше) продолжает работать — VPN включается по желанию, оба режима доступны одновременно",
-                "При первом включении VPN Windows один раз попросит подтвердить права администратора",
-                "Безопасность: при отзыве доступа устройства его учётная запись общей папки отключается, а активные подключения разрываются"
+                "Добавлена вкладка «Общая папка (VPN)»: доступ к общей папке можно открыть через защищённый VPN-канал, если прямое SMB-подключение блокируется сетью",
+                "VPN теперь доступен всем подключённым устройствам; конфигурация создаётся автоматически при подключении по токену",
+                "Исправлено открытие общей папки через VPN: папка монтируется с выданными сервером SMB-учётными данными",
+                "Добавлен раздел Tekla «Патчинг»: коннектор поставляет актуальный патч IFC-экспорта для Tekla 2025 SP7 и может установить его с резервной копией",
+                "Интерфейс коннектора переведён на модульную структуру: разделы Tekla, Model Sharing, VPN, Structura и Атрибуты разделены на самостоятельные вкладки",
+                "Безопасность: при отзыве доступа устройства его учётная запись общей папки отключается, VPN-peer удаляется, а активные подключения разрываются"
             }
         },
         new()
@@ -358,6 +360,12 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
                 _settings.ModelSharingLastAppliedUtc = info.AppliedUtc;
                 _settingsService.Save(_settings);
             };
+        }
+
+        if (_shell.Tekla.Module("Патчинг") is Features.Tekla.Patching.PatchingModule patch)
+        {
+            patch.ConfirmHandler = msg =>
+                ThemedDialogs.Show(this, msg, "Патчинг Tekla", MessageBoxButton.OKCancel, MessageBoxImage.Warning) == MessageBoxResult.OK;
         }
 
         if (_shell.Structura.Module("Structura") is Features.Structura.StructuraModule st)

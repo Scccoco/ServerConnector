@@ -11,6 +11,9 @@ namespace Connector.Desktop.Features.Tekla.Patching;
 // guarded by a confirmation the View supplies (any connected user may self-patch — see project decision).
 public sealed class PatchingViewModel : ObservableObject
 {
+    private const string BundledPatchSetRelativePath = @"PatchSets\Tekla\2025.0-SP7";
+    private const string LegacyLocalPatchSetPath = @"C:\Users\Lagom\ifc-poc\staging\2025";
+
     private readonly IfcExportPatchService _service;
 
     // The View sets this to show a confirm dialog (returns true to proceed). Any-user self-patch guardrail.
@@ -26,8 +29,7 @@ public sealed class PatchingViewModel : ObservableObject
         OpenLogCommand = new RelayCommand(OpenLog);
 
         _teklaBin = _service.ResolveTeklaBin(null, null);
-        // Until the LFS delivery rail lands, default the staging set to the local PoC folder (browsable).
-        _stagingDir = @"C:\Users\Lagom\ifc-poc\staging\2025";
+        _stagingDir = ResolveDefaultStagingDir();
     }
 
     private string _teklaBin = "";
@@ -58,6 +60,18 @@ public sealed class PatchingViewModel : ObservableObject
     public ICommand ApplyCommand { get; }
     public ICommand RollbackCommand { get; }
     public ICommand OpenLogCommand { get; }
+
+    private static string ResolveDefaultStagingDir()
+    {
+        var bundled = Path.Combine(AppContext.BaseDirectory, BundledPatchSetRelativePath);
+        if (Directory.Exists(bundled) && File.Exists(Path.Combine(bundled, "manifest.json")))
+            return bundled;
+
+        if (Directory.Exists(LegacyLocalPatchSetPath) && File.Exists(Path.Combine(LegacyLocalPatchSetPath, "manifest.json")))
+            return LegacyLocalPatchSetPath;
+
+        return bundled;
+    }
 
     public void RefreshStatus()
     {

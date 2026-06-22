@@ -9,9 +9,9 @@
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>Connector.Desktop</AssemblyName>
     <RootNamespace>Connector.Desktop</RootNamespace>
-    <Version>1.0.25</Version>
-    <FileVersion>1.0.25.0</FileVersion>
-    <AssemblyVersion>1.0.25.0</AssemblyVersion>
+    <Version>1.0.26</Version>
+    <FileVersion>1.0.26.0</FileVersion>
+    <AssemblyVersion>1.0.26.0</AssemblyVersion>
     <ApplicationIcon>Assets\structura_connector.ico</ApplicationIcon>
   </PropertyGroup>
 
@@ -23,6 +23,13 @@
   <ItemGroup>
     <Content Include="Assets\structura_connector.ico" />
     <Resource Include="Assets\structura_logo.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="PatchSets\Tekla\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>

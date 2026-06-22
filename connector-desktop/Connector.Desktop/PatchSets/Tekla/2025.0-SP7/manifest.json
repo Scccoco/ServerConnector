@@ -1,0 +1,43 @@
+{
+  "TeklaBuild": "2025.0.56843",
+  "SetVersion": "2025.0-SP7-pset1",
+  "Files": [
+    {
+      "TargetRelpath": "IFCExport4.dll",
+      "Sha256": "3211996D48797C0AF13AE885A6BF4515B670AFF6D77858E3D49E45A0F2F28724"
+    },
+    {
+      "TargetRelpath": "Model.dll",
+      "Sha256": "0438B6C2A5BC2C2A4B7782F56733FDD77BE6A7758D9BD5EC0CCFE6BA8D879AB4"
+    },
+    {
+      "TargetRelpath": "CommonObjects.dll",
+      "Sha256": "2C0188D318FAF1804B2DA26400869D090E38E180A8D1157909434E99C5D464E0"
+    },
+    {
+      "TargetRelpath": "Features\\PropertyPaneFeature.dll",
+      "Sha256": "1F8D4A91EC58768EB73E896DCE7754C07454410151A9A66265647CDD4E465AD6"
+    },
+    {
+      "TargetRelpath": "Features\\PropertySetsUIFeature.dll",
+      "Sha256": "E030FC9FDE61065CA6E1887BBE17B0910FC578A595CA200DBE0A6CCA0A667BA8"
+    }
+  ],
+  "Xsd": {
+    "Entities": {
+      "IfcAlarm": "MEP",
+      "IfcController": "MEP",
+      "IfcEarthworksElement": "INFRA",
+      "IfcElectricFlowStorageDevice": "MEP",
+      "IfcFurniture": "ARCH",
+      "IfcGeographicElement": "INFRA",
+      "IfcReinforcedSoil": "INFRA",
+      "IfcRoad": "INFRA",
+      "IfcRoadPart": "INFRA",
+      "IfcSensor": "MEP",
+      "IfcShadingDevice": "ARCH",
+      "IfcTrackElement": "INFRA",
+      "IfcVibrationIsolator": "STRU"
+    }
+  }
+}
