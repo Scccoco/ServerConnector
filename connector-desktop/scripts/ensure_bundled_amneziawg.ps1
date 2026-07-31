@@ -18,7 +18,12 @@ if ([string]::IsNullOrWhiteSpace($TargetDir)) {
 }
 
 $targetExe = Join-Path $TargetDir 'amneziawg.exe'
-if (-not $Force -and (Test-Path $targetExe)) {
+$markerPath = Join-Path $TargetDir '.structura-bundle-version'
+$expectedMarker = 'amneziawg-amd64-2.0.2.msi sha256:1b7308d0c74685193dee5d30fd30f370b5a2748a7f648869cd16f25286efc784'
+if (-not $Force -and
+    (Test-Path $targetExe) -and
+    (Test-Path $markerPath) -and
+    ((Get-Content -LiteralPath $markerPath -Raw).Trim() -eq $expectedMarker)) {
     Write-Host "Bundled AmneziaWG already exists at $TargetDir"
     exit 0
 }
@@ -30,23 +35,19 @@ New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$apiUrl = 'https://api.github.com/repos/amnezia-vpn/amneziawg-windows-client/releases/latest'
-Write-Host "Resolving latest AmneziaWG release from $apiUrl"
-$release = Invoke-RestMethod -Uri $apiUrl -Headers @{ 'User-Agent' = 'StructuraConnectorBuild' } -TimeoutSec 30
-
-$asset = $release.assets |
-    Where-Object { $_.name -match 'amd64.*\.msi$' } |
-    Select-Object -First 1
-if (-not $asset) {
-    $asset = $release.assets | Where-Object { $_.name -match '\.msi$' } | Select-Object -First 1
-}
-if (-not $asset) {
-    throw "Could not find an AmneziaWG MSI asset in the latest release"
-}
+$assetName = 'amneziawg-amd64-2.0.2.msi'
+$assetUrl = "https://github.com/amnezia-vpn/amneziawg-windows-client/releases/download/2.0.2/$assetName"
+$expectedSha256 = '1b7308d0c74685193dee5d30fd30f370b5a2748a7f648869cd16f25286efc784'
 
 $msiPath = Join-Path ([System.IO.Path]::GetTempPath()) ("awg_" + [Guid]::NewGuid().ToString('N') + ".msi")
-Write-Host "Downloading $($asset.name)"
-Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $msiPath -TimeoutSec 180
+Write-Host "Downloading pinned $assetName"
+Invoke-WebRequest -Uri $assetUrl -OutFile $msiPath -TimeoutSec 180
+
+$actualSha256 = (Get-FileHash -LiteralPath $msiPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualSha256 -ne $expectedSha256) {
+    Remove-Item -LiteralPath $msiPath -Force -ErrorAction SilentlyContinue
+    throw "AmneziaWG SHA-256 mismatch: expected $expectedSha256, got $actualSha256"
+}
 
 # Administrative install: unpack only (no system change, no driver).
 $extractDir = Join-Path ([System.IO.Path]::GetTempPath()) ("awg_extract_" + [Guid]::NewGuid().ToString('N'))
@@ -76,4 +77,5 @@ if (-not (Test-Path $targetExe)) {
     throw "AmneziaWG bundling failed: $targetExe not present"
 }
 
-Write-Host "Bundled AmneziaWG prepared at $TargetDir (version $($release.tag_name))"
+$expectedMarker | Set-Content -LiteralPath $markerPath -Encoding ASCII
+Write-Host "Bundled AmneziaWG prepared at $TargetDir (version 2.0.2)"

@@ -109,7 +109,7 @@ Admin credentials source:
 - Update manifest endpoint: `http://SERVER:8080/updates/latest.json`
 - Update file endpoint: `http://SERVER:8080/updates/files/<MSI_FILE_NAME>`
 - Manifest file is read from `server/updates/latest.json`
-- Required manifest fields: `version`, `msiUrl` (optional `notes`)
+- Required manifest fields: `version`, `msiUrl`, `sha256` (optional `notes`)
 
 ## Tekla firm lightweight manifest
 - Endpoint: `GET /updates/tekla/firm/latest.json`
@@ -134,7 +134,7 @@ GitHub release mode (recommended):
 - Configure `github_updates_repo` in `server/config.json` as `owner/repo`
 - Optional: set `github_updates_asset_name` (default `Connector.Desktop.Setup.msi`)
 - Optional: set `github_updates_cache_seconds` (default `300`) to reduce GitHub API calls
-- Server starts returning latest GitHub release as manifest data (`tag_name` -> `version`, release MSI asset -> `msiUrl`)
+- Server returns the latest GitHub release as manifest data (`tag_name` -> `version`, release MSI asset -> `msiUrl`, asset digest -> `sha256`)
 - If GitHub API fails and `github_updates_fallback_local_manifest=true`, server falls back to local `server/updates/latest.json`
 
 Release automation:

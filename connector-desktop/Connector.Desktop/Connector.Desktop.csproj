@@ -7,11 +7,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
+    <SatelliteResourceLanguages>ru;en</SatelliteResourceLanguages>
     <AssemblyName>Connector.Desktop</AssemblyName>
     <RootNamespace>Connector.Desktop</RootNamespace>
-    <Version>1.0.26</Version>
-    <FileVersion>1.0.26.0</FileVersion>
-    <AssemblyVersion>1.0.26.0</AssemblyVersion>
+    <Version>1.0.27</Version>
+    <FileVersion>1.0.27.0</FileVersion>
+    <AssemblyVersion>1.0.27.0</AssemblyVersion>
     <ApplicationIcon>Assets\structura_connector.ico</ApplicationIcon>
   </PropertyGroup>
 

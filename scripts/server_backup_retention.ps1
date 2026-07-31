@@ -1,9 +1,10 @@
 # Backup retention policy для C:\Connector\backup\.
 #
-# Покрывает оба типа артефактов, которые туда складывает CI:
+# Покрывает только известные резервные артефакты:
 #   * connector.db.<sha>-<ts>           ← snapshot SQLite БД перед каждым деплоем
+#   * postgres\*.dump                   ← verified PostgreSQL dumps
 #   * ConnectorApi.old.xml.<ts>         ← XML предыдущего Scheduled Task'а
-#   * server.archive-<date>             ← одноразовый snapshot старой раскладки
+# Одноразовые server.archive-*, конфиги и любые незнакомые файлы не удаляет.
 #
 # Политика хранения:
 #   - daily: оставлять все snapshot'ы за последние 30 дней
@@ -37,8 +38,37 @@ $daily    = 30
 $weekly   = $daily + 12 * 7
 $monthly  = $weekly + 6 * 30
 
-# Считаем как один артефакт каждый файл и каждую папку верхнего уровня
-$items = Get-ChildItem -Path $backupDir -Force | Sort-Object LastWriteTime
+function Get-IsoWeekKey([datetime]$Date) {
+    # [Globalization.ISOWeek] появился только в новых .NET и отсутствует в
+    # штатном Windows PowerShell 5.1 на Windows Server 2022.
+    $dayOfWeek = [int]$Date.DayOfWeek
+    if ($dayOfWeek -eq 0) {
+        $dayOfWeek = 7
+    }
+    $thursday = $Date.Date.AddDays(4 - $dayOfWeek)
+    $week = [Globalization.CultureInfo]::InvariantCulture.Calendar.GetWeekOfYear(
+        $thursday,
+        [Globalization.CalendarWeekRule]::FirstFourDayWeek,
+        [DayOfWeek]::Monday
+    )
+    return "$($thursday.Year)-W$('{0:D2}' -f $week)"
+}
+
+$postgresDir = Join-Path $backupDir 'postgres'
+$items = @(
+    Get-ChildItem -LiteralPath $backupDir -File -Force -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -like 'connector.db.*' -or
+            $_.Name -like 'ConnectorApi.old.xml.*'
+        }
+    if (Test-Path -LiteralPath $postgresDir) {
+        Get-ChildItem -LiteralPath $postgresDir -File -Force -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -like '*.dump' -or
+                $_.Name -like '*.dump.partial'
+            }
+    }
+) | Sort-Object LastWriteTime
 
 $keepDaily    = @()   # все snapshot'ы за последние 30 дней — все сохраняются
 $keepBucketed = @{}   # bucketKey -> newest в bucket (для weekly/monthly)
@@ -54,8 +84,7 @@ foreach ($item in $items) {
     }
 
     if ($ageDays -le $weekly) {
-        $iso = [Globalization.ISOWeek]::GetWeekOfYear($item.LastWriteTime)
-        $bucket = "weekly-$($item.LastWriteTime.Year)-W$('{0:D2}' -f $iso)"
+        $bucket = "weekly-$(Get-IsoWeekKey -Date $item.LastWriteTime)"
     } elseif ($ageDays -le $monthly) {
         $bucket = "monthly-$($item.LastWriteTime.ToString('yyyy-MM'))"
     } else {
@@ -81,7 +110,7 @@ foreach ($item in $delete) {
         "$msg [DRY-RUN]" | Add-Content -Path $logFile
     } else {
         try {
-            Remove-Item -LiteralPath $item.FullName -Recurse -Force
+            Remove-Item -LiteralPath $item.FullName -Force
             $msg | Add-Content -Path $logFile
         } catch {
             "[$(Get-Date -Format s)] delete-failed: $($item.FullName): $_" | Add-Content -Path $logFile

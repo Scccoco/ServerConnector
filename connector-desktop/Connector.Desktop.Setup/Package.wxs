@@ -4,7 +4,7 @@
 
   <Package Name="Structura Connector"
            Manufacturer="Structura"
-  Version="1.0.26"
+           Version="1.0.27"
            UpgradeCode="0E67CBE8-8F77-45EA-B89D-E58C8C554B37"
            InstallerVersion="500"
            Compressed="yes"

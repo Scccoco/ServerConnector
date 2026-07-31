@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Connector.Desktop", "connec
 EndProject
 Project("{B7DD6F7E-DEF8-4E67-B5B7-07EF123DB6F0}") = "Connector.Desktop.Setup", "connector-desktop\Connector.Desktop.Setup\Connector.Desktop.Setup.wixproj", "{DF1DCE57-8B4A-487E-BCD0-C3BD457E4EDD}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Connector.Desktop.Tests", "connector-desktop\Connector.Desktop.Tests\Connector.Desktop.Tests.csproj", "{28095634-AC11-432B-8BC4-0B4B96F4D284}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,9 +28,14 @@ Global
 		{DF1DCE57-8B4A-487E-BCD0-C3BD457E4EDD}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DF1DCE57-8B4A-487E-BCD0-C3BD457E4EDD}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{DF1DCE57-8B4A-487E-BCD0-C3BD457E4EDD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{28095634-AC11-432B-8BC4-0B4B96F4D284}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{28095634-AC11-432B-8BC4-0B4B96F4D284}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{28095634-AC11-432B-8BC4-0B4B96F4D284}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{28095634-AC11-432B-8BC4-0B4B96F4D284}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{C0704DDA-C113-4871-99AF-A40A1EED7E51} = {BADB6E80-BDD3-4420-9FFD-FC245314685A}
 		{DF1DCE57-8B4A-487E-BCD0-C3BD457E4EDD} = {BADB6E80-BDD3-4420-9FFD-FC245314685A}
+		{28095634-AC11-432B-8BC4-0B4B96F4D284} = {BADB6E80-BDD3-4420-9FFD-FC245314685A}
 	EndGlobalSection
 EndGlobal

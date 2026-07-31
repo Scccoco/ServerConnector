@@ -48,11 +48,9 @@ New-Item -ItemType Directory -Path $publishDir -Force | Out-Null
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 
 & $ensureGitScript -TargetDir $bundledGitDir
-# AmneziaWG bundling must not hard-fail an unrelated release if GitHub is unreachable or the
-# asset name changes; the connector degrades gracefully when the VPN client is absent
-# (VpnProvisioningService.BundledClientPresent) and the csproj globs tools\awg so a missing
-# dir still produces a valid MSI.
-try { & $ensureAwgScript -TargetDir $bundledAwgDir } catch { Write-Warning "AmneziaWG bundle skipped: $_" }
+# VPN is enabled in production, so a release without the bundled client would be incomplete.
+# The preparation script uses a pinned version and verifies SHA-256 before extraction.
+& $ensureAwgScript -TargetDir $bundledAwgDir
 
 Invoke-ExternalCommand -Description 'dotnet publish' -Command {
     dotnet publish $appProj -c Release -r win-x64 -p:PublishSingleFile=false -p:SelfContained=true -o $publishDir

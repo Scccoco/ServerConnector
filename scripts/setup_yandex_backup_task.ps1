@@ -13,23 +13,29 @@ $script   = 'C:\Connector\src\scripts\backup_bim_to_yandex.ps1'
 
 if (-not (Test-Path $script)) { throw "Backup script not found: $script" }
 
-$tr = "powershell -NoProfile -ExecutionPolicy Bypass -File $script"
+$action = New-ScheduledTaskAction `
+    -Execute 'powershell.exe' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`""
+$trigger = New-ScheduledTaskTrigger -Daily -At '03:00'
+$principal = New-ScheduledTaskPrincipal `
+    -UserId 'SYSTEM' `
+    -LogonType ServiceAccount `
+    -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet `
+    -StartWhenAvailable `
+    -MultipleInstances IgnoreNew `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 15) `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 6)
 
-# native-command stderr с EAP=Stop триггерит исключение даже если schtasks
-# /Delete выдаёт "task not found" (норма для первого запуска). Снижаем EAP
-# на короткое время и опираемся только на $LASTEXITCODE для /Create.
-$oldEAP = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-try {
-    & schtasks /Delete /TN $taskName /F 2>&1 | Out-Null
-    & schtasks /Create /SC DAILY /ST 03:00 /TN $taskName /TR $tr /RU SYSTEM /RL HIGHEST /F | Out-Null
-    $createExit = $LASTEXITCODE
-} finally {
-    $ErrorActionPreference = $oldEAP
-}
-if ($createExit -ne 0) { throw "schtasks /Create exited $createExit" }
+Register-ScheduledTask `
+    -TaskName $taskName `
+    -Action $action `
+    -Trigger $trigger `
+    -Principal $principal `
+    -Settings $settings `
+    -Force | Out-Null
 
 Write-Host "Task $taskName created/updated:"
 Get-ScheduledTask -TaskName $taskName | Select-Object TaskName, State
-(Get-ScheduledTask $taskName).Triggers | Select-Object StartBoundary, DaysInterval | Format-List
-(Get-ScheduledTask $taskName).Actions | Format-List Execute, Arguments
+Get-ScheduledTaskInfo -TaskName $taskName | Select-Object LastRunTime, LastTaskResult, NextRunTime

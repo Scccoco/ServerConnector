@@ -12,6 +12,7 @@ import shutil
 import sqlite3
 import subprocess
 import threading
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote
@@ -1240,12 +1241,14 @@ def load_local_update_manifest() -> dict:
 
     version = str(manifest.get("version", "")).strip()
     msi_url = str(manifest.get("msiUrl", "")).strip()
-    if not version or not msi_url:
-        raise HTTPException(status_code=500, detail="Update manifest must contain version and msiUrl")
+    sha256 = normalize_sha256_digest(manifest.get("sha256"))
+    if not version or not msi_url or not sha256:
+        raise HTTPException(status_code=500, detail="Update manifest must contain version, msiUrl and sha256")
 
     return {
         "version": version,
         "msiUrl": msi_url,
+        "sha256": sha256,
         "notes": str(manifest.get("notes", "")).strip(),
     }
 
@@ -1748,6 +1751,13 @@ def normalize_release_version(tag_name: str) -> str:
     return version
 
 
+def normalize_sha256_digest(value: object) -> str:
+    raw = str(value or "").strip().lower()
+    if raw.startswith("sha256:"):
+        raw = raw[len("sha256:"):]
+    return raw if re.fullmatch(r"[0-9a-f]{64}", raw) else ""
+
+
 def parse_bool(value: object, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -1857,10 +1867,14 @@ def load_github_update_manifest(cfg: dict) -> dict:
     msi_url = str(selected_asset.get("browser_download_url", "")).strip()
     if not msi_url:
         raise HTTPException(status_code=502, detail="GitHub release asset has no browser_download_url")
+    sha256 = normalize_sha256_digest(selected_asset.get("digest"))
+    if not sha256:
+        raise HTTPException(status_code=502, detail="GitHub release asset has no valid SHA-256 digest")
 
     return {
         "version": version,
         "msiUrl": msi_url,
+        "sha256": sha256,
         "notes": str(payload.get("body", "")).strip(),
     }
 
@@ -2009,13 +2023,14 @@ def apply_firewall(device_id: str, ip: str, ports: list[int]) -> None:
         raise RuntimeError(f"Firewall update failed: {run.stderr.strip()}")
 
 
-app = FastAPI(title="Connector API")
-
-
-@app.on_event("startup")
-def startup() -> None:
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     init_db()
     load_config()
+    yield
+
+
+app = FastAPI(title="Connector API", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -3156,7 +3171,12 @@ def admin_network_revoke_ip(
 
 
 @app.get("/devices")
-def devices() -> dict:
+def devices(
+    request: Request,
+    x_admin_key: str | None = Header(default=None),
+) -> dict:
+    cfg = load_config()
+    require_admin_access(request, cfg, x_admin_key)
     with db_connect() as conn:
         rows = conn.execute(
             "SELECT device_id, public_ip, hostname, agent_version, updated_at FROM devices ORDER BY updated_at DESC"

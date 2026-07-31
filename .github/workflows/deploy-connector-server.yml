@@ -6,6 +6,12 @@ on:
     paths:
       - "connector/server/**"
       - "scripts/server_deploy_step.ps1"
+      - "scripts/backup_bim_to_yandex.ps1"
+      - "scripts/backup_connector_postgres.ps1"
+      - "scripts/server_backup_retention.ps1"
+      - "scripts/setup_connector_postgres_backup_task.ps1"
+      - "scripts/setup_yandex_backup_task.ps1"
+      - "scripts/setup_yandex_rclone_config.ps1"
       - ".github/workflows/deploy-connector-server.yml"
   pull_request:
     paths:

@@ -11,7 +11,12 @@ if ([string]::IsNullOrWhiteSpace($TargetDir)) {
 
 $targetBin = Join-Path $TargetDir 'bin/git.exe'
 $targetCmd = Join-Path $TargetDir 'cmd/git.exe'
-if (-not $Force -and ((Test-Path $targetBin) -or (Test-Path $targetCmd))) {
+$markerPath = Join-Path $TargetDir '.structura-bundle-version'
+$expectedMarker = 'MinGit-2.55.0.3-64-bit.zip sha256:f48e2d2dc74a24454adc6d8fd0ac25bf9c2386f19cfb06202b9465aaad4f9f05'
+if (-not $Force -and
+    ((Test-Path $targetBin) -or (Test-Path $targetCmd)) -and
+    (Test-Path $markerPath) -and
+    ((Get-Content -LiteralPath $markerPath -Raw).Trim() -eq $expectedMarker)) {
     Write-Host "Bundled git already exists at $TargetDir"
     exit 0
 }
@@ -21,23 +26,19 @@ if (Test-Path $TargetDir) {
 }
 New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
 
-$apiUrl = 'https://api.github.com/repos/git-for-windows/git/releases/latest'
-Write-Host "Resolving latest MinGit release from $apiUrl"
-$release = Invoke-RestMethod -Uri $apiUrl -Headers @{ 'User-Agent' = 'StructuraConnectorBuild' } -TimeoutSec 30
-
-$asset = $release.assets |
-    Where-Object { $_.name -match '^MinGit-.*-64-bit\.zip$' } |
-    Select-Object -First 1
-
-if (-not $asset) {
-    throw "Could not find MinGit 64-bit asset in latest git-for-windows release"
-}
+$assetName = 'MinGit-2.55.0.3-64-bit.zip'
+$assetUrl = "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.3/$assetName"
+$expectedSha256 = 'f48e2d2dc74a24454adc6d8fd0ac25bf9c2386f19cfb06202b9465aaad4f9f05'
 
 $zipPath = Join-Path ([System.IO.Path]::GetTempPath()) ("mingit_" + [Guid]::NewGuid().ToString('N') + ".zip")
-Write-Host "Downloading $($asset.name)"
-Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -TimeoutSec 120
+Write-Host "Downloading pinned $assetName"
+Invoke-WebRequest -Uri $assetUrl -OutFile $zipPath -TimeoutSec 120
 
 try {
+    $actualSha256 = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualSha256 -ne $expectedSha256) {
+        throw "MinGit SHA-256 mismatch: expected $expectedSha256, got $actualSha256"
+    }
     Expand-Archive -Path $zipPath -DestinationPath $TargetDir -Force
 }
 finally {
@@ -50,4 +51,5 @@ if (-not ((Test-Path $targetBin) -or (Test-Path $targetCmd))) {
     throw "Bundled git extracted, but git.exe not found in bin/cmd"
 }
 
+$expectedMarker | Set-Content -LiteralPath $markerPath -Encoding ASCII
 Write-Host "Bundled git prepared at $TargetDir"

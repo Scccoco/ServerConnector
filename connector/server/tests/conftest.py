@@ -79,4 +79,7 @@ def app_module(runtime_paths):
 def client(app_module):
     from fastapi.testclient import TestClient
 
-    return TestClient(app_module.app)
+    # Enter the context so FastAPI lifespan runs exactly as it does in
+    # production (database migrations and config initialization).
+    with TestClient(app_module.app) as test_client:
+        yield test_client

@@ -57,6 +57,18 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
     {
         new()
         {
+            Version = "1.0.27",
+            PublishedAt = "31.07.2026",
+            Title = "Надёжность общей папки и обновлений",
+            Changes = new[]
+            {
+                "Исправлено подключение к общей папке: Connector больше не отключает другие сетевые диски пользователя при конфликте SMB-учётных данных",
+                "Очистка конфликтующего подключения теперь ограничена только сервером общей папки; если Windows удерживает сессию, Connector показывает безопасную точечную инструкцию",
+                "Установщик обновления скачивается только по HTTPS и запускается только после успешной проверки SHA-256"
+            }
+        },
+        new()
+        {
             Version = "1.0.26",
             PublishedAt = "22.06.2026",
             Title = "Ключевые изменения версии",
@@ -1852,18 +1864,6 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
         }
     }
 
-    private static void DisconnectAllSmbSessions()
-    {
-        try
-        {
-            RunProcessOrThrow("net", "use", "*", "/delete", "/y");
-        }
-        catch (InvalidOperationException ex) when (IsWindowsNetNoEntries(ex.Message) || IsWindowsNetConnectionNotFound(ex.Message))
-        {
-            // No active SMB sessions in current user profile.
-        }
-    }
-
     private static void DisconnectAllSmbSessionsForHost(string host)
     {
         var list = RunProcess("net", "use");
@@ -1894,6 +1894,15 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
         {
             // Fallback wildcard returned no active entries.
         }
+
+        try
+        {
+            RunProcessOrThrow("net", "use", $@"\\{host}\IPC$", "/delete", "/y");
+        }
+        catch (InvalidOperationException ex) when (IsWindowsNetConnectionNotFound(ex.Message) || IsWindowsNetNoEntries(ex.Message))
+        {
+            // IPC session not present.
+        }
     }
 
     private static void DeleteStoredWindowsCredentialForHost(string host)
@@ -1901,7 +1910,6 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
         var targets = new[]
         {
             host,
-            $"TERMSRV/{host}",
             $"Microsoft_Windows_Network/{host}"
         };
 
@@ -1962,16 +1970,12 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
                 }
                 catch (InvalidOperationException retryEx) when (IsWindowsSmbConflict(retryEx.Message))
                 {
-                    DisconnectAllSmbSessions();
-                    try
-                    {
-                        RunProcessOrThrow("net", "use", $@"\\{host}\IPC$", "/delete", "/y");
-                    }
-                    catch (InvalidOperationException ipcEx) when (IsWindowsNetConnectionNotFound(ipcEx.Message) || IsWindowsNetNoEntries(ipcEx.Message))
-                    {
-                        // IPC session not present.
-                    }
-                    ConnectShareWithAnyLogin(shareRoot, password, loginCandidates);
+                    throw new InvalidOperationException(
+                        $"Windows сохранила активное SMB-подключение к серверу {host} с другими учётными данными. " +
+                        "Коннектор не стал отключать остальные сетевые диски. " +
+                        $"Закройте окна папок этого сервера и удалите только его подключения командой " +
+                        $"'net use \\\\{host}\\* /delete /y', затем повторите подключение.",
+                        retryEx);
                 }
             }
         });

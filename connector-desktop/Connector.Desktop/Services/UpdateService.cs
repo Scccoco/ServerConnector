@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -20,12 +21,13 @@ public sealed class UpdateService
 
     public async Task<UpdateManifest?> TryGetUpdateAsync(string manifestUrl, CancellationToken ct)
     {
-        if (!Uri.TryCreate(manifestUrl, UriKind.Absolute, out _))
+        if (!Uri.TryCreate(manifestUrl, UriKind.Absolute, out var manifestUri) ||
+            !string.Equals(manifestUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
 
-        using var req = new HttpRequestMessage(HttpMethod.Get, manifestUrl);
+        using var req = new HttpRequestMessage(HttpMethod.Get, manifestUri);
         using var res = await _http.SendAsync(req, ct);
         if (!res.IsSuccessStatusCode)
         {
@@ -38,7 +40,10 @@ public sealed class UpdateService
             PropertyNameCaseInsensitive = true
         });
 
-        if (manifest is null || string.IsNullOrWhiteSpace(manifest.Version) || string.IsNullOrWhiteSpace(manifest.MsiUrl))
+        if (manifest is null ||
+            string.IsNullOrWhiteSpace(manifest.Version) ||
+            string.IsNullOrWhiteSpace(manifest.MsiUrl) ||
+            !IsValidSha256(manifest.Sha256))
         {
             return null;
         }
@@ -53,23 +58,80 @@ public sealed class UpdateService
 
     public async Task<string> DownloadInstallerAsync(UpdateManifest manifest, CancellationToken ct)
     {
+        if (!Uri.TryCreate(manifest.MsiUrl, UriKind.Absolute, out var downloadUri) ||
+            !string.Equals(downloadUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Адрес установщика должен использовать HTTPS.");
+        }
+
+        var expectedSha256 = NormalizeSha256(manifest.Sha256);
+        if (!IsValidSha256(expectedSha256))
+        {
+            throw new InvalidOperationException("Manifest обновления не содержит корректную SHA-256 сумму.");
+        }
+
         var dir = Path.Combine(Path.GetTempPath(), "StructuraConnectorUpdates");
         Directory.CreateDirectory(dir);
 
         var fileName = $"StructuraConnector_{manifest.Version}.msi";
         var filePath = Path.Combine(dir, fileName);
 
-        using var req = new HttpRequestMessage(HttpMethod.Get, manifest.MsiUrl);
+        using var req = new HttpRequestMessage(HttpMethod.Get, downloadUri);
         using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
         res.EnsureSuccessStatusCode();
 
-        await using (var stream = await res.Content.ReadAsStreamAsync(ct))
-        await using (var fs = File.Create(filePath))
+        try
         {
-            await stream.CopyToAsync(fs, ct);
+            await using (var stream = await res.Content.ReadAsStreamAsync(ct))
+            await using (var fs = File.Create(filePath))
+            {
+                await stream.CopyToAsync(fs, ct);
+            }
+
+            var actualSha256 = ComputeSha256(filePath);
+            if (!string.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    $"Проверка установщика не пройдена: ожидалась SHA-256 {expectedSha256}, получена {actualSha256}.");
+            }
+        }
+        catch
+        {
+            try
+            {
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                }
+            }
+            catch
+            {
+                // Best-effort cleanup; the original verification/download error is more important.
+            }
+            throw;
         }
 
         return filePath;
+    }
+
+    public static string ComputeSha256(string filePath)
+    {
+        using var stream = File.OpenRead(filePath);
+        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+    }
+
+    private static string NormalizeSha256(string value)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized.StartsWith("sha256:", StringComparison.Ordinal)
+            ? normalized["sha256:".Length..]
+            : normalized;
+    }
+
+    private static bool IsValidSha256(string value)
+    {
+        var normalized = NormalizeSha256(value);
+        return normalized.Length == 64 && normalized.All(Uri.IsHexDigit);
     }
 
     public static void RunInstaller(string msiPath)
@@ -114,5 +176,6 @@ public sealed class UpdateManifest
 {
     public string Version { get; set; } = "";
     public string MsiUrl { get; set; } = "";
+    public string Sha256 { get; set; } = "";
     public string Notes { get; set; } = "";
 }

@@ -26,7 +26,7 @@ Windows-продукт для удалённой работы с BIM-инфра�
 | Server source (git checkout) | `C:\Connector\src\` (master, перезаписывается каждым деплоем) |
 | Server runtime (persistent) | `C:\Connector\runtime\` (`config.json`, `.env` с `CONNECTOR_DB_URL`, `.venv\`, `logs\`, легаси `connector.db`) |
 | Server БД | PostgreSQL `connector_prod` (см. § 4b) на shared `127.0.0.1:5432` |
-| Server backup | `C:\Connector\backup\` (snapshots `connector.db.<sha>-<ts>` + Scheduled Task XMLs + `server.archive-2026-05-08\`) |
+| Server backup | `C:\Connector\backup\` (verified PostgreSQL dumps in `postgres\` + legacy SQLite snapshots + Scheduled Task XMLs + `server.archive-2026-05-08\`) |
 | Tekla repo worktree | `C:\Connector\tekla-firm-standard` (`PROBIM55/tekla-firm-standard`, ref `main`) |
 | Tekla на клиентах | `C:\Company\TeklaFirm` (локальная копия из subdir `XS_FIRM`) |
 | Соседний сервис 1 | `budget.structura-most.ru` / `budzhetapp.ru` — FamilyBudget (Node.js, `C:\apps\family-budget`, порт 3001, Windows-служба `FamilyBudget`, использует PostgreSQL на :5432). **Не ломать.** |
@@ -44,6 +44,7 @@ Managed firewall ports: `80, 443, 445, 1238, 3389`.
 | `/connect/bootstrap` | POST | `X-Device-Token` | Логин клиента → device_id, session_id, SMB, heartbeat interval, manifest URL |
 | `/heartbeat` | POST | `X-Device-Token` + `X-Device-Session` | Один токен = одна активная сессия |
 | `/updates/latest.json` | GET | — | Manifest desktop-обновлений (берёт из GitHub Releases) |
+| `/devices` | GET | admin | Legacy-список устройств; публичный доступ запрещён |
 | `/admin/login` | POST | JSON `{username,password}` → 303 | Логин админа |
 | `/admin/tokens` | GET | **`X-Admin-Key`** или Basic Auth | Список токенов и SMB-кредов |
 | `/admin/updates/refresh` | POST | admin | Сброс кэша update manifest |
@@ -55,8 +56,9 @@ Managed firewall ports: `80, 443, 445, 1238, 3389`.
 **Connector ОТВЕЧАЕТ за** (всё внутри `C:\Connector\server\` или порождается его кодом):
 
 - свой uvicorn-процесс на `127.0.0.1:8080` (Scheduled Task `ConnectorApi`, не Windows-служба);
-- Scheduled Task `ConnectorBackupRetention` (daily 04:00 SYSTEM) — чистит `C:\Connector\backup\` по политике 30 дней daily + 12 недель weekly + 6 месяцев monthly (`scripts/server_backup_retention.ps1`);
-- Scheduled Task `ConnectorYandexBackup` (daily 03:00 SYSTEM) — backup `C:\BIM_Models` (≈9.2 GiB / 25k файлов) на Yandex.Disk через rclone в `Structura/BIM_Backup/` с versioning через `--backup-dir archive/<date>/`, retention 90 дней. Скрипт `scripts/backup_bim_to_yandex.ps1`, конфиг `runtime/rclone.conf`, лог `runtime/logs/backup_yandex.log`. Полный runbook в `doc/YANDEX_BACKUP_RU.md`;
+- Scheduled Task `ConnectorPostgresBackup` (daily 02:30 SYSTEM) — создаёт и проверяет `pg_restore --list` дамп PostgreSQL в `C:\Connector\backup\postgres\`;
+- Scheduled Task `ConnectorBackupRetention` (daily 04:00 SYSTEM) — чистит только известные DB/task snapshots в `C:\Connector\backup\` по политике 30 дней daily + 12 недель weekly + 6 месяцев monthly (`scripts/server_backup_retention.ps1`);
+- Scheduled Task `ConnectorYandexBackup` (daily 03:00 SYSTEM) — encrypted backup `C:\BIM_Models` (≈9.2 GiB / 25k файлов) и PostgreSQL dumps на Yandex.Disk через `yandex_crypt:` с versioning через `--backup-dir archive/<date>/`, retention 90 дней. Скрипт `scripts/backup_bim_to_yandex.ps1`, конфиг и ключи `runtime/rclone.conf`, лог `runtime/logs/backup_yandex.log`. Полный runbook в `doc/YANDEX_BACKUP_RU.md`;
 - локальные Windows-пользователи `bim_*` — создаёт/удаляет `smb_user_manager.ps1`, пароли отдаются через bootstrap;
 - SMB-права на share `BIM_Models` — те же `bim_*` users;
 - Windows Firewall allowlist managed-портов (80/443/445/1238/3389) — `firewall_manager.ps1`, allowlist по `public_ip` клиентов;
@@ -97,7 +99,7 @@ Managed firewall ports: `80, 443, 445, 1238, 3389`.
 3. `git push origin master`.
 4. GitHub Actions (`.github/workflows/deploy-connector-server.yml`):
    - Job **`test`**: setup Python 3.11, ставит `requirements-dev.txt`, гоняет `pytest -v`. Без green test'а deploy не пускается.
-   - Job **`deploy`** (нужен test): SSH на `62.113.36.107` под `opwork_admin`, запускает `C:\Connector\src\scripts\server_deploy_step.ps1 -CommitSha $github.sha`. Скрипт делает: `git fetch + reset --hard origin/master`, `pip install -r requirements.txt`, snapshot `connector.db` → `C:\Connector\backup\connector.db.<prevSha>-<ts>`, `python run_migrations.py`, рестарт Scheduled Task `ConnectorApi`, smoke `GET /health` (проверяет 200 + `version` совпадает с deployed SHA).
+   - Job **`deploy`** (нужен test): SSH на `62.113.36.107` под `opwork_admin`, запускает `C:\Connector\src\scripts\server_deploy_step.ps1 -CommitSha $github.sha`. Скрипт делает: `git fetch + reset --hard origin/master`, `pip install -r requirements.txt`, verified PostgreSQL dump (или SQLite snapshot в legacy-конфигурации), `python run_migrations.py`, рестарт Scheduled Task `ConnectorApi`, smoke `GET /health` (проверяет 200 + `version` совпадает с deployed SHA).
    - **Auto-rollback** при провале любого шага: `git reset --hard <prevSha>`, рестарт Task'а.
 5. Concurrency group `deploy-connector-server` гарантирует один деплой за раз.
 

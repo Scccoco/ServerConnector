@@ -20,6 +20,9 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
+      - name: Run desktop tests
+        run: dotnet test connector-desktop/Connector.Desktop.Tests/Connector.Desktop.Tests.csproj --configuration Release --nologo
+
       - name: Sync app versions from tag
         shell: pwsh
         run: |
@@ -65,13 +68,16 @@ jobs:
         shell: pwsh
         run: ./connector-desktop/build_msi.ps1
 
-      - name: Verify MSI artifact
+      - name: Verify MSI artifact and create checksum
         shell: pwsh
         run: |
           $msi = "connector-desktop/artifacts/Connector.Desktop.Setup.msi"
           if (-not (Test-Path $msi)) {
             throw "MSI not found: $msi"
           }
+          $hash = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  Connector.Desktop.Setup.msi" |
+            Set-Content -LiteralPath "$msi.sha256" -Encoding ASCII
 
       - name: Publish GitHub Release with MSI
         uses: softprops/action-gh-release@v2
@@ -79,7 +85,9 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Structura Connector ${{ github.ref_name }}
           generate_release_notes: true
-          files: connector-desktop/artifacts/Connector.Desktop.Setup.msi
+          files: |
+            connector-desktop/artifacts/Connector.Desktop.Setup.msi
+            connector-desktop/artifacts/Connector.Desktop.Setup.msi.sha256
 
       - name: Refresh server updates manifest cache
         shell: pwsh

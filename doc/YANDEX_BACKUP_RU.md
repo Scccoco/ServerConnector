@@ -2,8 +2,10 @@
 
 ## Что делает
 
-Ежедневно в 03:00 MSK копирует `C:\BIM_Models` (≈9 GB, 25k файлов) на
-Yandex.Disk в папку `Structura/BIM_Backup/`. Только изменившиеся файлы
+Ежедневно в 03:00 MSK копирует `C:\BIM_Models` (≈9 GB, 25k файлов) и
+проверенные дампы PostgreSQL на Yandex.Disk. Данные и имена файлов шифруются
+локально через `rclone crypt`, поэтому Yandex не блокирует легитимные DLL
+из BIM-дистрибутивов проверкой содержимого. Только изменившиеся файлы
 заливаются заново; заменённые/удалённые сохраняются в `archive/<date>/`
 для восстановления. Архив хранится 90 дней.
 
@@ -13,23 +15,29 @@ Yandex.Disk в папку `Structura/BIM_Backup/`. Только изменивш
 |---|---|
 | rclone бинарь | `C:\Tools\rclone\rclone.exe` |
 | rclone config (с OAuth-токеном) | `C:\Connector\runtime\rclone.conf` (gitignore'д через расположение в runtime\) |
+| PostgreSQL backup | `C:\Connector\backup\postgres\*.dump`, task `ConnectorPostgresBackup` daily 02:30 SYSTEM |
 | Backup-скрипт | `C:\Connector\src\scripts\backup_bim_to_yandex.ps1` (в git) |
 | Scheduled Task | `ConnectorYandexBackup`, daily 03:00 SYSTEM |
 | Логи | `C:\Connector\runtime\logs\backup_yandex.log` |
+| Статус последнего запуска | `C:\Connector\runtime\last_yandex_backup.json` |
 
 ## Раскладка на Я.Диске
 
 ```
 Structura/
-└── BIM_Backup/
-    ├── current/                  ← всегда mirror C:\BIM_Models
-    │   ├── Revit/
-    │   ├── Tekla/
-    │   └── Tokens/
-    └── archive/                  ← снимки изменений по датам
-        ├── 2026-05-10/
-        ├── 2026-05-11/
-        └── ...                   ← хранятся 90 дней, потом авто-удаление
+└── BIM_Backup_Encrypted/         ← зашифрованное содержимое, руками не редактировать
+```
+
+Логическая раскладка через remote `yandex_crypt:`:
+
+```
+yandex_crypt:
+├── bim/
+│   ├── current/                  ← mirror C:\BIM_Models
+│   └── archive/<yyyy-MM-dd>/     ← заменённые и удалённые версии
+└── connector-db/
+    ├── current/                  ← verified PostgreSQL dumps
+    └── archive/<yyyy-MM-dd>/
 ```
 
 ## Initial setup (одноразовый)
@@ -71,10 +79,29 @@ powershell -NoProfile -ExecutionPolicy Bypass `
     -Token '<вставь сюда JSON-токен в одинарных кавычках>'
 ```
 
-Скрипт создаст `C:\Connector\runtime\rclone.conf` и сделает test-запрос
-(`rclone lsd yandex_disk:`) — должен показать список папок Я.Диска.
+Скрипт создаст/обновит `yandex_disk:`, один раз создаст шифрованный remote
+`yandex_crypt:` и сделает тестовые запросы. Существующие ключи шифрования
+при повторном запуске сохраняются.
 
-### 3. Initial backup (manual)
+Сразу сохраните полную копию `C:\Connector\runtime\rclone.conf` в защищённом
+месте. Без значений `password` и `password2` расшифровать резервные копии
+невозможно.
+
+### 3. Настроить локальный PostgreSQL backup
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+    -File C:\Connector\src\scripts\setup_connector_postgres_backup_task.ps1
+
+powershell -NoProfile -ExecutionPolicy Bypass `
+    -File C:\Connector\src\scripts\backup_connector_postgres.ps1 `
+    -Reason initial
+```
+
+Дамп считается успешным только после `pg_restore --list`. Частично созданный
+файл публиковаться не будет.
+
+### 4. Initial off-site backup (manual)
 
 Первый запуск — вручную, чтобы убедиться, что всё работает и оценить время:
 
@@ -83,10 +110,10 @@ powershell -NoProfile -ExecutionPolicy Bypass `
     -File C:\Connector\src\scripts\backup_bim_to_yandex.ps1
 ```
 
-Первый sync 9 GB по типичной скорости Я.Диска API (~5-10 MB/s) занимает 20-40 мин.
+Первый sync 9 GB может занять десятки минут.
 Лог пишется в реальном времени в `C:\Connector\runtime\logs\backup_yandex.log`.
 
-### 4. Scheduled Task
+### 5. Scheduled Task
 
 После успешного initial backup'а:
 
@@ -107,19 +134,25 @@ Get-ScheduledTask -TaskName ConnectorYandexBackup
 
 ### Восстановить актуальную версию
 
-В Я.Диске зайти в `Structura/BIM_Backup/current/<путь к файлу>` — это
-последняя сохранённая копия.
+Копировать нужно через `yandex_crypt:`, иначе на диске будут видны только
+зашифрованные имена и содержимое:
+
+```powershell
+& 'C:\Tools\rclone\rclone.exe' --config C:\Connector\runtime\rclone.conf `
+    copyto 'yandex_crypt:bim/current/<путь к файлу>' `
+           'C:\BIM_Models_restored\<имя файла>'
+```
 
 ### Восстановить старую версию (например, 5 дней назад)
 
-В `Structura/BIM_Backup/archive/2026-05-04/<путь>` — версия файла, которая
-была заменена/удалена 4 мая. Открыть, скачать.
+Старая версия находится логически в
+`yandex_crypt:bim/archive/2026-05-04/<путь>`.
 
 ### Массовое восстановление за день (rclone)
 
 ```powershell
 & 'C:\Tools\rclone\rclone.exe' --config C:\Connector\runtime\rclone.conf `
-    copy yandex_disk:Structura/BIM_Backup/archive/2026-05-04 `
+    copy yandex_crypt:bim/archive/2026-05-04 `
          C:\BIM_Models_restored
 ```
 
@@ -130,6 +163,9 @@ Get-ScheduledTask -TaskName ConnectorYandexBackup
 ```powershell
 Get-Content C:\Connector\runtime\logs\backup_yandex.log -Tail 5
 # Ищи "BACKUP DONE total=..." в конце
+
+Get-Content C:\Connector\runtime\last_yandex_backup.json
+# "ok": true
 ```
 
 ```powershell
@@ -141,7 +177,7 @@ Get-ScheduledTaskInfo -TaskName ConnectorYandexBackup
 
 ```powershell
 & 'C:\Tools\rclone\rclone.exe' --config C:\Connector\runtime\rclone.conf `
-    size yandex_disk:Structura/BIM_Backup/current
+    size yandex_crypt:bim/current
 # Покажет size+count папки current — должно ≈ соответствовать C:\BIM_Models
 ```
 
@@ -149,6 +185,8 @@ Get-ScheduledTaskInfo -TaskName ConnectorYandexBackup
 
 В git живут:
 - `scripts/backup_bim_to_yandex.ps1` — main script
+- `scripts/backup_connector_postgres.ps1` — verified PostgreSQL dump
+- `scripts/setup_connector_postgres_backup_task.ps1` — task PostgreSQL backup
 - `scripts/setup_yandex_rclone_config.ps1` — bootstrap rclone config из токена
 - `scripts/setup_yandex_backup_task.ps1` — bootstrap Scheduled Task
 - `doc/YANDEX_BACKUP_RU.md` — этот документ
@@ -178,7 +216,5 @@ Get-ScheduledTaskInfo -TaskName ConnectorYandexBackup
 ## Будущие улучшения
 
 - **Telegram alert** при failed backup — после реализации Этапа 1 из ROADMAP_RU.md (общая alert-инфра).
-- **Зашифровать backup** через `rclone crypt` backend — если бизнес-данные
-  считаются чувствительными. Сейчас не делаем (BIM-модели обычно не PII).
 - **Метрики backup'а** в Prometheus после Этапа 1 ROADMAP — последний успех,
   размер последнего sync'а, длительность.

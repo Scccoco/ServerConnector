@@ -7,7 +7,7 @@
 # Делает:
 #   1. git fetch + reset --hard origin/master в C:\Connector\src
 #   2. pip install -r requirements.txt в runtime venv
-#   3. backup connector.db в C:\Connector\backup\
+#   3. backup активной БД (verified pg_dump для PostgreSQL либо SQLite copy)
 #   4. python run_migrations.py (применяет pending миграции)
 #   5. перезапускает Scheduled Task ConnectorApi
 #   6. smoke test: GET /health должен ответить 200 и вернуть нужный SHA
@@ -52,6 +52,31 @@ function Invoke-Step([string]$Name, [scriptblock]$Block) {
     }
 }
 
+function Import-RuntimeEnv([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Warning "Runtime env file not found: $Path"
+        return
+    }
+
+    Get-Content -LiteralPath $Path | ForEach-Object {
+        $line = $_.Trim()
+        if (-not $line -or $line.StartsWith('#')) {
+            return
+        }
+        $eq = $line.IndexOf('=')
+        if ($eq -le 0) {
+            return
+        }
+        $key = $line.Substring(0, $eq).Trim()
+        $value = $line.Substring($eq + 1).Trim()
+        if (($value.StartsWith('"') -and $value.EndsWith('"')) -or
+            ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+        Set-Item -Path "Env:$key" -Value $value
+    }
+}
+
 # Запомнить текущий SHA для rollback
 $prevSha = (& git -C $src rev-parse HEAD).Trim()
 Write-Host "PREV_SHA=$prevSha"
@@ -72,10 +97,26 @@ try {
         & $venvPython -m pip install --quiet -r $reqsFile 2>&1 | Out-Host
     }
 
+    if (-not (Test-Path -LiteralPath $backup)) {
+        New-Item -ItemType Directory -Path $backup -Force | Out-Null
+    }
+    Import-RuntimeEnv -Path (Join-Path $runtime '.env')
+
     $ts = Get-Date -Format 'yyyy-MM-ddTHH-mm-ss'
-    $backupFile = Join-Path $backup "connector.db.$prevSha-$ts"
-    Invoke-Step "backup db -> $backupFile" {
-        Copy-Item (Join-Path $runtime 'connector.db') $backupFile -Force
+    if ($env:CONNECTOR_DB_URL -and
+        ($env:CONNECTOR_DB_URL.StartsWith('postgresql://', [StringComparison]::OrdinalIgnoreCase) -or
+         $env:CONNECTOR_DB_URL.StartsWith('postgres://', [StringComparison]::OrdinalIgnoreCase))) {
+        $postgresBackupScript = Join-Path $src 'scripts\backup_connector_postgres.ps1'
+        Invoke-Step 'backup PostgreSQL' {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                -File $postgresBackupScript `
+                -Reason "predeploy-$prevSha" 2>&1 | Out-Host
+        }
+    } else {
+        $backupFile = Join-Path $backup "connector.db.$prevSha-$ts"
+        Invoke-Step "backup SQLite -> $backupFile" {
+            Copy-Item (Join-Path $runtime 'connector.db') $backupFile -Force
+        }
     }
 
     Invoke-Step 'run migrations' {

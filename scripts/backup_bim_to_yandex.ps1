@@ -1,89 +1,161 @@
-# Daily backup of \\62.113.36.107\BIM_Models -> Yandex.Disk via rclone.
+# Daily encrypted off-site backup to Yandex.Disk via rclone.
 #
-# Запускается Scheduled Task'ом ConnectorYandexBackup ежедневно в 03:00 MSK
-# (под SYSTEM, тот же runtime/.venv не нужен — это PowerShell + rclone.exe).
+# The destination is an rclone crypt remote. Encryption is required not only
+# for confidentiality: Yandex content filtering rejects several legitimate
+# BIM dependency DLLs with HTTP 409 even under unique names. Encrypting the
+# payload makes the backup byte-complete while rclone still restores the
+# original directory structure and file contents.
 #
-# Стратегия:
-#   * source: C:\BIM_Models (full SMB share live на хосте)
-#   * dest:   yandex_disk:Structura/BIM_Backup/current/
-#   * archive: yandex_disk:Structura/BIM_Backup/archive/<yyyy-MM-dd>/
-#       (туда rclone --backup-dir перемещает заменённые/удалённые файлы)
+# Sources:
+#   C:\BIM_Models                     -> yandex_crypt:bim/current
+#   C:\Connector\backup\postgres      -> yandex_crypt:connector-db/current
 #
-# rclone copy + --backup-dir сохраняет точечную историю изменений по дате.
-# Через 90 дней (см. retention в конце скрипта) archive/<date>/ удаляется.
-#
-# Логи: C:\Connector\runtime\logs\backup_yandex.log с ротацией (rclone сам не
-# ротирует; делаем перенос >50 MB в backup_yandex.log.<N>).
+# Replaced/deleted objects are moved to archive/<yyyy-MM-dd>/ and retained for
+# 90 days. The Scheduled Task ConnectorPostgresBackup runs at 02:30, before
+# this task starts at 03:00.
+
+param(
+    [string]$RemoteName = 'yandex_crypt'
+)
 
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 $rclone        = 'C:\Tools\rclone\rclone.exe'
 $rcloneConfig  = 'C:\Connector\runtime\rclone.conf'
-$source        = 'C:\BIM_Models'
-$remoteName    = 'yandex_disk'
-$destBase      = 'Structura/BIM_Backup'
+$bimSource     = 'C:\BIM_Models'
+$postgresSource = 'C:\Connector\backup\postgres'
 $today         = Get-Date -Format 'yyyy-MM-dd'
 $logFile       = 'C:\Connector\runtime\logs\backup_yandex.log'
+$statusFile    = 'C:\Connector\runtime\last_yandex_backup.json'
 $logDir        = Split-Path $logFile -Parent
 $retentionDays = 90
 
-# Pre-flight
-if (-not (Test-Path $rclone)) { throw "rclone not installed at $rclone" }
-if (-not (Test-Path $rcloneConfig)) { throw "rclone config not found at $rcloneConfig (run OAuth setup first)" }
-if (-not (Test-Path $source)) { throw "Source not found: $source" }
-if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+function Write-BackupLog([string]$Message) {
+    $Message | Add-Content -LiteralPath $logFile -Encoding UTF8
+}
 
-# Ротация лога перед запуском (если >50 MB)
-if ((Test-Path $logFile) -and ((Get-Item $logFile).Length -gt 50MB)) {
-    Move-Item $logFile "$logFile.$(Get-Date -Format 'yyyyMMdd-HHmmss')" -Force -ErrorAction SilentlyContinue
+function Invoke-EncryptedSync(
+    [Parameter(Mandatory=$true)][string]$Source,
+    [Parameter(Mandatory=$true)][string]$DestinationBase,
+    [string[]]$ExtraArgs = @()
+) {
+    if (-not (Test-Path -LiteralPath $Source)) {
+        throw "Backup source not found: $Source"
+    }
+
+    $args = @(
+        'sync', $Source, "${RemoteName}:${DestinationBase}/current",
+        '--config', $rcloneConfig,
+        '--backup-dir', "${RemoteName}:${DestinationBase}/archive/$today",
+        '--transfers', '8',
+        '--checkers', '16',
+        '--tpslimit', '5',
+        '--tpslimit-burst', '5',
+        '--contimeout', '30s',
+        '--timeout', '10m',
+        '--retries', '5',
+        '--retries-sleep', '15s',
+        '--low-level-retries', '20',
+        '--log-file', $logFile,
+        '--log-level', 'INFO',
+        '--stats', '1m'
+    ) + $ExtraArgs
+
+    Write-BackupLog "=== SYNC START source=$Source destination=${RemoteName}:${DestinationBase}/current ==="
+    & $rclone @args
+    $exitCode = $LASTEXITCODE
+    Write-BackupLog "=== SYNC EXIT $exitCode source=$Source ==="
+    if ($exitCode -ne 0) {
+        throw "rclone sync failed for $Source with exit $exitCode"
+    }
+}
+
+function Invoke-RemoteRetention([Parameter(Mandatory=$true)][string]$DestinationBase) {
+    $args = @(
+        'delete', "${RemoteName}:${DestinationBase}/archive",
+        '--config', $rcloneConfig,
+        '--min-age', "${retentionDays}d",
+        '--rmdirs',
+        '--tpslimit', '5',
+        '--tpslimit-burst', '5',
+        '--retries', '3',
+        '--low-level-retries', '10',
+        '--log-file', $logFile,
+        '--log-level', 'INFO'
+    )
+    & $rclone @args
+    $exitCode = $LASTEXITCODE
+    Write-BackupLog "=== RETENTION EXIT $exitCode destination=$DestinationBase ==="
+    return $exitCode
+}
+
+if (-not (Test-Path -LiteralPath $rclone)) {
+    throw "rclone not installed at $rclone"
+}
+if (-not (Test-Path -LiteralPath $rcloneConfig)) {
+    throw "rclone config not found at $rcloneConfig"
+}
+if (-not (Test-Path -LiteralPath $logDir)) {
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+}
+
+$configuredRemotes = & $rclone listremotes --config $rcloneConfig
+if ($LASTEXITCODE -ne 0 -or $configuredRemotes -notcontains "${RemoteName}:") {
+    throw "Encrypted rclone remote '${RemoteName}:' is not configured"
+}
+
+if ((Test-Path -LiteralPath $logFile) -and ((Get-Item -LiteralPath $logFile).Length -gt 50MB)) {
+    Move-Item -LiteralPath $logFile -Destination "$logFile.$(Get-Date -Format 'yyyyMMdd-HHmmss')" -Force
 }
 
 $startedAt = Get-Date
-"=== BACKUP START $(($startedAt).ToString('s')) (today=$today) ===" | Add-Content -Path $logFile
+Write-BackupLog "=== BACKUP START $($startedAt.ToString('s')) remote=$RemoteName ==="
 
-# Основной sync с архивацией заменённых/удалённых файлов
-$rcloneArgs = @(
-    'sync', $source, "${remoteName}:${destBase}/current",
-    '--config', $rcloneConfig,
-    '--backup-dir', "${remoteName}:${destBase}/archive/$today",
-    '--transfers', '8',
-    '--checkers', '16',
-    '--tpslimit', '5',
-    '--log-file', $logFile,
-    '--log-level', 'INFO',
-    '--stats', '1m',
-    '--exclude', '*.tmp',
-    '--exclude', 'Thumbs.db',
-    '--exclude', '~$*',
-    '--exclude', 'desktop.ini'
-)
-& $rclone @rcloneArgs
-$syncExit = $LASTEXITCODE
+try {
+    # The database dump is small and operationally critical. Upload it first
+    # so an unrelated large BIM-file failure cannot postpone its off-site copy.
+    Invoke-EncryptedSync -Source $postgresSource -DestinationBase 'connector-db'
 
-"=== SYNC EXIT $syncExit ($([math]::Round((New-TimeSpan -Start $startedAt -End (Get-Date)).TotalMinutes,1)) min) ===" |
-    Add-Content -Path $logFile
+    Invoke-EncryptedSync -Source $bimSource -DestinationBase 'bim' -ExtraArgs @(
+        '--exclude', '*.tmp',
+        '--exclude', 'Thumbs.db',
+        '--exclude', '~$*',
+        '--exclude', 'desktop.ini'
+    )
 
-if ($syncExit -ne 0) {
-    Write-Error "rclone sync failed with exit $syncExit; see $logFile"
-    exit $syncExit
+    # Retention failures are recorded but do not invalidate a successful new
+    # backup. Keeping old versions longer is safer than marking fresh data bad.
+    $bimRetentionExit = Invoke-RemoteRetention -DestinationBase 'bim'
+    $dbRetentionExit = Invoke-RemoteRetention -DestinationBase 'connector-db'
+
+    $finishedAt = Get-Date
+    $status = [ordered]@{
+        ok = $true
+        started_at = $startedAt.ToUniversalTime().ToString('o')
+        finished_at = $finishedAt.ToUniversalTime().ToString('o')
+        duration_minutes = [math]::Round((New-TimeSpan -Start $startedAt -End $finishedAt).TotalMinutes, 1)
+        remote = $RemoteName
+        retention_ok = ($bimRetentionExit -eq 0 -and $dbRetentionExit -eq 0)
+    }
+    $status | ConvertTo-Json | Set-Content -LiteralPath $statusFile -Encoding UTF8
+    Write-BackupLog "=== BACKUP DONE total=$($status.duration_minutes) min retention_ok=$($status.retention_ok) ==="
+    exit 0
 }
-
-# Retention: удаляем archive/<date>/ старше $retentionDays
-"=== RETENTION cleanup (>${retentionDays}d) ===" | Add-Content -Path $logFile
-$retentionArgs = @(
-    'delete', "${remoteName}:${destBase}/archive",
-    '--config', $rcloneConfig,
-    '--min-age', "${retentionDays}d",
-    '--rmdirs',
-    '--log-file', $logFile,
-    '--log-level', 'INFO'
-)
-& $rclone @retentionArgs
-$retExit = $LASTEXITCODE
-
-"=== RETENTION EXIT $retExit ===" | Add-Content -Path $logFile
-"=== BACKUP DONE total=$([math]::Round((New-TimeSpan -Start $startedAt -End (Get-Date)).TotalMinutes,1)) min ===" |
-    Add-Content -Path $logFile
-
-# Retention exit code != 0 не считаем фатальным (старые файлы могут не существовать)
-exit 0
+catch {
+    $finishedAt = Get-Date
+    $message = $_.Exception.Message
+    $status = [ordered]@{
+        ok = $false
+        started_at = $startedAt.ToUniversalTime().ToString('o')
+        finished_at = $finishedAt.ToUniversalTime().ToString('o')
+        duration_minutes = [math]::Round((New-TimeSpan -Start $startedAt -End $finishedAt).TotalMinutes, 1)
+        remote = $RemoteName
+        error = $message
+    }
+    $status | ConvertTo-Json | Set-Content -LiteralPath $statusFile -Encoding UTF8
+    Write-BackupLog "=== BACKUP FAILED: $message ==="
+    Write-Error $message
+    exit 1
+}
