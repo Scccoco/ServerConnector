@@ -153,7 +153,7 @@ DB-миграция — в обе директории (`migrations/postgres` + 
 
 ## 10. Открытые вопросы — проверяются на PoC (Этап 1), НЕ блокируют план
 
-1. **Путь к шаре через VPN.** Идеально сохранить `\\62.113.36.107\BIM_Models` (как в Tekla/коннекторе) — требует, чтобы доступ к публичному IP сервера через туннель работал (hairpin) + `AllowedIPs` включал `62.113.36.107/32`. Если hairpin капризничает — fallback на `\\10.77.123.1\BIM_Models` (внутренний VPN-IP) и подмену пути в коннекторе при активном VPN.
+1. **Путь к шаре через VPN — решено 2026-07-31.** Сохранён канонический `\\62.113.36.107\BIM_Models`: клиент получает `62.113.36.107/32` в `AllowedIPs`, а сервер работает в weak-host режиме на `Ethernet` и `awgserver`. Это сохраняет одинаковые пути для Tekla, Revit, моделей и синхронизаций независимо от способа подключения.
 2. **AmneziaWG-сервер на Windows как multi-peer listener** — подтвердить стабильность (это форк wireguard-windows, ожидаемо умеет; проверить на PoC). Fallback при проблемах: AWG-сервер в Linux-контейнере (WSL2/Docker) на том же VPS или на отдельном Linux-VPS с маршрутом к 445.
 3. **Модель прав клиента** (A1 bundled-сервис vs A2 embeddable tunnel.dll) — выбрать по результатам PoC; обе требуют админ для адаптера/сервиса.
 4. **Динамическое добавление peer** (`awg set` без рестарта vs перегенерация конфига сервера) — выбрать наименее disruptive.
@@ -184,7 +184,13 @@ Caddy (80/443/2019) и его конфиг; Connector API :8080 и его БД; 
 - **Прод цел:** TCP-порты после = baseline (идентичны), Caddy/DsSvc/LanmanServer Running, задачи Ready/Running, `connector /health ok=True`.
 - **Wintun-адаптер** `awgserver` Up; профиль `Public` (scoped-правило 445 для VPN-подсети это покрывает; если на PoC SMB через туннель не пойдёт — поставить адаптер в Private: `Set-NetConnectionProfile -InterfaceAlias awgserver -NetworkCategory Private`).
 
-**Путь к шаре через VPN: `\\10.77.123.1\BIM_Models`** (внутренний tunnel-IP сервера), НЕ `\\62.113.36.107\...`. Это следствие чистого split-tunnel (`AllowedIPs = 10.77.123.0/24`). Для Этапа 2 — решить: (а) использовать `\\10.77.123.1\...` (чистый split, рекомендуется), либо (б) добавить `62.113.36.107/32` в клиентский `AllowedIPs`, чтобы сохранить старый путь (тогда и Model Sharing/heartbeat пойдут через туннель — не вредно, но менее «узко»).
+**Актуальный путь к шаре через VPN: `\\62.113.36.107\BIM_Models`.** В клиентский `AllowedIPs` добавляется `62.113.36.107/32`. На сервере оба интерфейса (`Ethernet` и `awgserver`) переведены в persistent weak-host режим, иначе Windows принимает SYN через VPN, но пытается отправить SYN-ACK через Ethernet и фиксирует `Inspection drop` / `INET: land attack`. Воспроизводимая настройка сервера:
+
+```powershell
+.\scripts\configure_canonical_smb_over_vpn.ps1
+```
+
+Правило применяется ко всем VPN-устройствам; `\\10.77.123.1\BIM_Models` остаётся только аварийным диагностическим адресом и не используется Connector как рабочий путь.
 
 **Откат сервера (1 раз, если понадобится):** `amneziawg /uninstalltunnelservice awgserver`; `Remove-NetFirewallRule -DisplayName 'AmneziaWG*'`; `msiexec /x <msi> /qn`; удалить `C:\awg`.
 
@@ -197,7 +203,7 @@ Caddy (80/443/2019) и его конфиг; Connector API :8080 и его БД; 
 **Вариант 1 (GUI, проще):**
 1. Скачать/установить AmneziaWG для Windows (`amneziawg-amd64-2.0.0.msi` со страницы релизов `amnezia-vpn/amneziawg-windows-client`).
 2. Открыть AmneziaWG → Import tunnel from file → `Desktop\poc-client.conf` → Activate.
-3. В проводнике открыть `\\10.77.123.1\BIM_Models` (логин `bim_sas` + его пароль из коннектора).
+3. В проводнике открыть `\\62.113.36.107\BIM_Models` (логин устройства и пароль из коннектора).
 
 **Вариант 2 (cmd от администратора):**
 ```cmd
@@ -205,9 +211,9 @@ msiexec /i amneziawg-amd64-2.0.0.msi DO_NOT_LAUNCH=1 /qn
 "C:\Program Files\AmneziaWG\amneziawg.exe" /installtunnelservice "C:\Users\Lagom\Desktop\poc-client.conf"
 "C:\Program Files\AmneziaWG\awg.exe" show
 ```
-Затем открыть `\\10.77.123.1\BIM_Models`.
+Затем открыть `\\62.113.36.107\BIM_Models`.
 
-**Критерий успеха:** `awg show` показывает свежий handshake; папка `\\10.77.123.1\BIM_Models` открывается. (Примечание: этот dev-ПК сейчас в сети, где 445 ОТКРЫТ, поэтому PoC доказывает механику VPN→SMB, но не обход блокировки; обход проверяется на ПК из сети с закрытым 445 — Этап 3.)
+**Критерий успеха:** `awg show` показывает свежий handshake; TCP 445 к `62.113.36.107` идёт через `structura-vpn`; папка `\\62.113.36.107\BIM_Models` открывается.
 
 **Снять туннель после теста:** `"C:\Program Files\AmneziaWG\amneziawg.exe" /uninstalltunnelservice poc-client`.
 
