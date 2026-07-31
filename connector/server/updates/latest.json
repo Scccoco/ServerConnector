@@ -1,6 +1,6 @@
 {
-  "version": "1.0.26",
-  "msiUrl": "https://github.com/PROBIM55/ServerConnector/releases/download/v1.0.26/Connector.Desktop.Setup.msi",
-  "sha256": "062428c45518e9373eed54f829d24eba97751d2c241fa4c7dd049c487088e3fb",
+  "version": "1.0.27",
+  "msiUrl": "https://github.com/PROBIM55/ServerConnector/releases/download/v1.0.27/Connector.Desktop.Setup.msi",
+  "sha256": "cd737382e5e8cc22a6d075a9a940c6f79ded2f6c5e18c56e6967d50c7e33226d",
   "notes": "Fallback manifest for the latest verified Connector Desktop release."
 }
