@@ -182,6 +182,11 @@ public sealed class VpnViewModel : ObservableObject
             Log?.Invoke("VPN enable: " + (result.IsSuccess ? "ok" : "fail") + " — " + result.Message);
             DialogHandler?.Invoke(result.Message,
                 MessageBoxButton.OK, result.IsSuccess ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            if (result.IsSuccess && !string.IsNullOrWhiteSpace(ResolvedUnc))
+            {
+                Log?.Invoke("VPN включён. Подключаю общую папку автоматически.");
+                OpenShareHandler?.Invoke(ResolvedUnc);
+            }
         }
         catch (Exception ex)
         {

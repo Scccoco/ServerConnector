@@ -42,6 +42,7 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
     private readonly HeartbeatClient _heartbeatClient = new(new HttpClient { Timeout = TimeSpan.FromSeconds(110) });
     private readonly UpdateService _updateService = new(new HttpClient { Timeout = TimeSpan.FromSeconds(40) });
     private readonly TeklaStandardService _teklaStandardService = new(new HttpClient { Timeout = TimeSpan.FromSeconds(25) });
+    private readonly TcpConnectivityProbe _tcpConnectivityProbe = new();
     // Model Sharing / VPN services now live inside their feature modules (the shell catalog). See ComposeFeatureModules().
     private readonly Shell.ShellViewModel _shell;   // modular feature catalog (domains → modules); assigned in ctor (needs `this` as IShellHost)
     private StandardModule? _standard;   // Tekla domain → "Стандарт" module (the lifted firm/extensions/libraries sync engine)
@@ -55,6 +56,18 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
     private readonly Forms.NotifyIcon _trayIcon;
     private static readonly IReadOnlyList<ReleaseNoteItem> ReleaseNotes = new List<ReleaseNoteItem>
     {
+        new()
+        {
+            Version = "1.0.28",
+            PublishedAt = "31.07.2026",
+            Title = "Надёжное подключение общей папки",
+            Changes = new[]
+            {
+                "Коннектор быстро определяет блокировку прямого SMB (TCP 445) и не ждёт долгого тайм-аута Windows",
+                "Если VPN уже включён, общая папка автоматически подключается через VPN",
+                "После первого включения VPN общая папка подключается автоматически"
+            }
+        },
         new()
         {
             Version = "1.0.27",
@@ -1377,24 +1390,79 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
         SyncFeatureModules();
         AppendLog("Настройки сохранены.");
 
-        var smbConnected = true;
-        try
+        var smbConnected = false;
+        var smbConnectionRoute = string.Empty;
+        var directSmbHost = GetSmbHost(sharePath);
+        var directSmbReachable = await _tcpConnectivityProbe.CanConnectAsync(
+            directSmbHost,
+            445,
+            TimeSpan.FromSeconds(4));
+
+        if (directSmbReachable)
         {
-            await ConnectSmbInternalAsync(bootstrap.SmbAccess.Login, bootstrap.SmbAccess.Password, sharePath, openExplorer: true);
+            try
+            {
+                await ConnectSmbInternalAsync(bootstrap.SmbAccess.Login, bootstrap.SmbAccess.Password, sharePath, openExplorer: true);
+                smbConnected = true;
+                smbConnectionRoute = "напрямую";
+            }
+            catch (Exception ex) when (IsWindowsSmbConflict(ex))
+            {
+                AppendLog("Прямое SMB-подключение не переключено автоматически (конфликт 1219). Текущая сессия SMB оставлена без изменений.");
+                AppendLog("Детали SMB конфликта: " + ex.Message);
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Прямое SMB-подключение не выполнено: " + ex.Message);
+            }
         }
-        catch (Exception ex) when (IsWindowsSmbConflict(ex))
+        else
         {
-            smbConnected = false;
-            AppendLog("SMB подключение не переключено автоматически (конфликт 1219). Текущая сессия SMB оставлена без изменений.");
-            AppendLog("Детали SMB конфликта: " + ex.Message);
+            AppendLog(
+                $"Прямой SMB недоступен: сервер {directSmbHost}:445 не отвечает из этой сети. " +
+                "Провайдер или роутер блокирует исходящий SMB.");
         }
-        catch (Exception ex)
+
+        if (!smbConnected)
         {
-            // SMB (общая файловая папка) не критична для подключения: heartbeat и Model Sharing
-            // работают и без неё. Частая причина — закрытый порт 445 (провайдер/сеть). Не валим коннект.
-            smbConnected = false;
-            AppendLog("SMB файловая папка не подключена: " + ex.Message);
-            AppendLog("Это не мешает работе коннектора (heartbeat) и Model Sharing. Частая причина — закрытый порт 445 в сети/у провайдера; для доступа к общей папке нужен VPN.");
+            var vpnUnc = ResolveVpnSmbUnc();
+            if (_settings.VpnEnabled && !string.IsNullOrWhiteSpace(vpnUnc))
+            {
+                var vpnHost = GetSmbHost(vpnUnc);
+                var vpnSmbReachable = await _tcpConnectivityProbe.CanConnectAsync(
+                    vpnHost,
+                    445,
+                    TimeSpan.FromSeconds(4));
+
+                if (vpnSmbReachable)
+                {
+                    try
+                    {
+                        await ConnectSmbInternalAsync(
+                            bootstrap.SmbAccess.Login,
+                            bootstrap.SmbAccess.Password,
+                            vpnUnc,
+                            openExplorer: true);
+                        smbConnected = true;
+                        smbConnectionRoute = "через VPN";
+                        AppendLog("Прямой SMB недоступен; общая папка автоматически подключена через VPN.");
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog("Автоматическое SMB-подключение через VPN не выполнено: " + ex.Message);
+                    }
+                }
+                else
+                {
+                    AppendLog(
+                        "VPN-путь к общей папке пока недоступен. Включите VPN на вкладке «Общая папка (VPN)» — " +
+                        "после включения коннектор подключит папку автоматически.");
+                }
+            }
+            else
+            {
+                AppendLog("VPN-доступ к общей папке не настроен для этого устройства.");
+            }
         }
 
         _timer.Stop();
@@ -1409,8 +1477,10 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
         {
             ThemedDialogs.Show(this, 
                 smbConnected
-                    ? "Подключение выполнено. SMB доступ открыт, автоотправка heartbeat включена."
-                    : "Подключение выполнено. Автоотправка heartbeat включена. Общая SMB-папка не подключена (возможна активная сессия Windows 1219 или закрытый порт 445 в сети) — на работу коннектора и Model Sharing это не влияет.",
+                    ? $"Подключение выполнено. Общая SMB-папка подключена {smbConnectionRoute}, автоотправка heartbeat включена."
+                    : "Подключение к серверу выполнено, heartbeat включён, но общая папка пока не подключена. " +
+                      "Прямой SMB (TCP 445) недоступен из этой сети. Включите VPN на вкладке «Общая папка (VPN)» — " +
+                      "после включения папка подключится автоматически.",
                 "Structura Connector",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -1903,6 +1973,18 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
         {
             // IPC session not present.
         }
+    }
+
+    private string ResolveVpnSmbUnc()
+    {
+        if (!string.IsNullOrWhiteSpace(_settings.VpnSmbUnc))
+        {
+            return _settings.VpnSmbUnc.Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(_settings.VpnServerIp)
+            ? string.Empty
+            : $@"\\{_settings.VpnServerIp.Trim()}\BIM_Models";
     }
 
     private static void DeleteStoredWindowsCredentialForHost(string host)

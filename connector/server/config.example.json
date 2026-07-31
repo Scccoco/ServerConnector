@@ -67,6 +67,10 @@
     "awg_exe": "C:\\Program Files\\AmneziaWG\\awg.exe",
     "server_conf": "C:\\awg\\awgserver.conf",
     "smb_unc": "\\\\10.77.123.1\\BIM_Models",
+    "_routed_ips_comment": "Optional canary route for preserving canonical UNC paths over VPN. Empty allowlist applies routed_ips to every VPN-enabled device.",
+    "routed_ips": [],
+    "routed_ips_device_allowlist": [],
+    "routed_smb_unc": "\\\\62.113.36.107\\BIM_Models",
     "obfuscation": {
       "Jc": 3, "Jmin": 50, "Jmax": 1000, "S1": 34, "S2": 34,
       "H1": 123411670, "H2": 406819097, "H3": 2002008603, "H4": 781642645

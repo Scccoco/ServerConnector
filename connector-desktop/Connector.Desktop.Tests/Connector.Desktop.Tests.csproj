@@ -22,6 +22,8 @@
          not copy the desktop application's bundled Git/VPN payload. -->
     <Compile Include="..\Connector.Desktop\Services\UpdateService.cs"
              Link="Services\UpdateService.cs" />
+    <Compile Include="..\Connector.Desktop\Services\TcpConnectivityProbe.cs"
+             Link="Services\TcpConnectivityProbe.cs" />
   </ItemGroup>
 
 </Project>

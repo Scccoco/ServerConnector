@@ -13,8 +13,9 @@ Design notes:
     device token). Stored in device_vpn so re-bootstrap returns the same config.
   * Peer is added LIVE via `awg set` (does not disconnect other peers) AND appended
     to the server .conf so it survives a tunnel-service/host restart.
-  * Split-tunnel: client AllowedIPs = the VPN subnet only, so the user's other VPNs
-    and normal traffic are untouched. SMB is reached at the server's VPN IP.
+  * Split-tunnel: client AllowedIPs always contains the VPN subnet and may contain
+    explicitly configured server routes. This lets existing UNC paths keep using
+    the canonical server IP without routing unrelated internet traffic into VPN.
 """
 
 import ipaddress
@@ -193,10 +194,39 @@ def _validate_vpn_cfg(vcfg: dict) -> None:
 
 # ---- client config assembly -----------------------------------------------------------
 
-def _build_client_conf(vcfg: dict, client_priv: str, address: str) -> str:
+def _routed_ips_for_device(vcfg: dict, device_id: str) -> list[str]:
+    raw_allowlist = vcfg.get("routed_ips_device_allowlist")
+    if isinstance(raw_allowlist, list) and raw_allowlist:
+        allowed_devices = {str(item).strip() for item in raw_allowlist if str(item).strip()}
+        if device_id not in allowed_devices:
+            return []
+
+    raw_routes = vcfg.get("routed_ips", [])
+    if not isinstance(raw_routes, list):
+        raise RuntimeError("vpn.routed_ips must be a list")
+
+    routes: list[str] = []
+    for raw in raw_routes:
+        value = str(raw).strip()
+        if not value:
+            continue
+        try:
+            normalized = str(ipaddress.ip_network(value, strict=False))
+        except ValueError as exc:
+            raise RuntimeError(f"invalid vpn.routed_ips entry: {value}") from exc
+        if normalized not in routes:
+            routes.append(normalized)
+    return routes
+
+
+def _client_allowed_ips(vcfg: dict, device_id: str) -> list[str]:
+    subnet = str(ipaddress.ip_network(str(vcfg.get("subnet", "10.77.123.0/24")), strict=False))
+    return [subnet, *[route for route in _routed_ips_for_device(vcfg, device_id) if route != subnet]]
+
+
+def _build_client_conf(vcfg: dict, client_priv: str, address: str, device_id: str) -> str:
     endpoint_host = str(vcfg.get("endpoint_host", ""))
     listen_port = int(vcfg.get("listen_port", 9994))
-    subnet = str(vcfg.get("subnet", "10.77.123.0/24"))
     server_pub = str(vcfg.get("server_public_key", ""))
     obf = _obfuscation_lines(vcfg)
     parts = [
@@ -211,7 +241,7 @@ def _build_client_conf(vcfg: dict, client_priv: str, address: str) -> str:
         "[Peer]",
         f"PublicKey = {server_pub}",
         f"Endpoint = {endpoint_host}:{listen_port}",
-        f"AllowedIPs = {subnet}",
+        f"AllowedIPs = {', '.join(_client_allowed_ips(vcfg, device_id))}",
         "PersistentKeepalive = 25",
         "",
     ]
@@ -232,7 +262,7 @@ def provision_vpn(device_id: str, cfg: dict, conn_factory) -> dict:
         address = _allocate_ip(vcfg, conn_factory)
         # persist the DB row FIRST so a later step failing can't leave a live peer with no record
         rec = {"public_key": pub, "private_key": priv, "vpn_address": address,
-               "config": _build_client_conf(vcfg, priv, address)}
+               "config": _build_client_conf(vcfg, priv, address, device_id)}
         save_device_vpn(device_id, rec, conn_factory)
         _register_peer_live(vcfg, pub, address)
         _persist_peer_to_conf(vcfg, device_id, pub, address)
@@ -243,9 +273,18 @@ def get_or_create_device_vpn(device_id: str, cfg: dict, conn_factory, force_rota
     if not force_rotate:
         existing = get_device_vpn(device_id, conn_factory)
         if existing and existing.get("config"):
+            vcfg = get_vpn_cfg(cfg)
+            refreshed_config = _build_client_conf(
+                vcfg,
+                existing["private_key"],
+                existing["vpn_address"],
+                device_id,
+            )
+            if refreshed_config != existing["config"]:
+                existing = {**existing, "config": refreshed_config}
+                save_device_vpn(device_id, existing, conn_factory)
             # re-assert the live peer AND the conf entry (idempotent) in case the tunnel/conf was rebuilt
             try:
-                vcfg = get_vpn_cfg(cfg)
                 _register_peer_live(vcfg, existing["public_key"], existing["vpn_address"])
                 _persist_peer_to_conf(vcfg, device_id, existing["public_key"], existing["vpn_address"])
             except Exception:
@@ -300,11 +339,14 @@ def vpn_bundle_for_bootstrap(device_id: str, cfg: dict, conn_factory) -> dict:
         return {"enabled": False}
     vcfg = get_vpn_cfg(cfg)
     rec = get_or_create_device_vpn(device_id, cfg, conn_factory)
+    routed_ips = _routed_ips_for_device(vcfg, device_id)
+    routed_smb_unc = str(vcfg.get("routed_smb_unc", "")).strip()
+    smb_unc = routed_smb_unc if routed_ips and routed_smb_unc else str(vcfg.get("smb_unc", ""))
     return {
         "enabled": True,
         "tunnel_name": str(vcfg.get("tunnel_name", "awgserver")),
         "address": rec["vpn_address"],
         "config": rec["config"],
-        "smb_unc": str(vcfg.get("smb_unc", "")),
+        "smb_unc": smb_unc,
         "server_vpn_ip": str(vcfg.get("server_address", "10.77.123.1")),
     }
