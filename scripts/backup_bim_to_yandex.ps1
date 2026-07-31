@@ -15,7 +15,9 @@
 # this task starts at 03:00.
 
 param(
-    [string]$RemoteName = 'yandex_crypt'
+    [string]$RemoteName = 'yandex_crypt',
+    [ValidateRange(1, 64)][int]$Transfers = 16,
+    [ValidateRange(1, 100)][int]$TpsLimit = 20
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,10 +51,10 @@ function Invoke-EncryptedSync(
         'sync', $Source, "${RemoteName}:${DestinationBase}/current",
         '--config', $rcloneConfig,
         '--backup-dir', "${RemoteName}:${DestinationBase}/archive/$today",
-        '--transfers', '8',
-        '--checkers', '16',
-        '--tpslimit', '5',
-        '--tpslimit-burst', '5',
+        '--transfers', $Transfers,
+        '--checkers', ([Math]::Max(16, $Transfers * 2)),
+        '--tpslimit', $TpsLimit,
+        '--tpslimit-burst', $TpsLimit,
         '--contimeout', '30s',
         '--timeout', '10m',
         '--retries', '5',
@@ -78,8 +80,8 @@ function Invoke-RemoteRetention([Parameter(Mandatory=$true)][string]$Destination
         '--config', $rcloneConfig,
         '--min-age', "${retentionDays}d",
         '--rmdirs',
-        '--tpslimit', '5',
-        '--tpslimit-burst', '5',
+        '--tpslimit', $TpsLimit,
+        '--tpslimit-burst', $TpsLimit,
         '--retries', '3',
         '--low-level-retries', '10',
         '--log-file', $logFile,
