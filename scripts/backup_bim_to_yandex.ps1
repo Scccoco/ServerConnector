@@ -16,8 +16,8 @@
 
 param(
     [string]$RemoteName = 'yandex_crypt',
-    [ValidateRange(1, 64)][int]$Transfers = 24,
-    [ValidateRange(1, 100)][int]$TpsLimit = 50
+    [ValidateRange(1, 64)][int]$Transfers = 16,
+    [ValidateRange(1, 100)][int]$TpsLimit = 20
 )
 
 $ErrorActionPreference = 'Stop'

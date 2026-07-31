@@ -208,7 +208,7 @@ Get-ScheduledTaskInfo -TaskName ConnectorYandexBackup
 - **Открытые/locked файлы** (например, активная Tekla-сессия пишет в `.db1`)
   — rclone скипает с warning, в следующий запуск (на следующий день, когда
   файл закрыт) — заберёт. Не критично, но в логе будут warning'и.
-- **Yandex API rate limits** — sync ограничен 50 TPS и использует retries с
+- **Yandex API rate limits** — sync ограничен 20 TPS и использует retries с
   backoff. При ответах 429 rclone автоматически снижает фактический темп.
 - **Большие файлы (>2 GB)** — Я.Диск ограничивает single file 50 GB. У нас
   максимум 158 MB (по inventory), запас огромный.
