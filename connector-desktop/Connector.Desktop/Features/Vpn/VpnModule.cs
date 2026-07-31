@@ -50,6 +50,11 @@ public sealed class VpnModule : IFeatureModule
     // module redraws. Replaces the old direct control mutation in UpdateVpnUi.
     public void PushContext(VpnContext context) => _viewModel.SetContext(context);
 
+    public Task<VpnResult> EnsureEnabledAsync(
+        bool showResultDialog = false,
+        bool openShareOnSuccess = false) =>
+        _viewModel.EnsureEnabledAsync(showResultDialog, openShareOnSuccess);
+
     public Task OnActivatedAsync()
     {
         _viewModel.RefreshStatus();

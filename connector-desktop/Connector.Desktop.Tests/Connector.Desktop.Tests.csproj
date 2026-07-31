@@ -24,6 +24,8 @@
              Link="Services\UpdateService.cs" />
     <Compile Include="..\Connector.Desktop\Services\TcpConnectivityProbe.cs"
              Link="Services\TcpConnectivityProbe.cs" />
+    <Compile Include="..\Connector.Desktop\Services\VpnConfigComparer.cs"
+             Link="Services\VpnConfigComparer.cs" />
   </ItemGroup>
 
 </Project>

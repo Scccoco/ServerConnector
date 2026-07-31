@@ -9,7 +9,7 @@
         <Border Style="{StaticResource CardStyle}" Margin="12,10,12,12">
             <StackPanel>
                 <TextBlock Text="Доступ к общей папке вне офиса" FontSize="19" FontWeight="SemiBold" />
-                <TextBlock Text="Если провайдер блокирует доступ к общей папке (порт 445), Connector может включить защищённый VPN-канал до сервера. Папка станет доступна из любой сети. VPN заворачивает только трафик к серверу фирмы — обычный интернет и другие ваши VPN не затрагиваются."
+                <TextBlock Text="Connector автоматически включает защищённый VPN-канал до сервера фирмы. Через него работают общая папка, heartbeat, обновления, синхронизация и Model Sharing; обычный интернет и другие ваши VPN не затрагиваются."
                            Margin="0,6,0,14" Foreground="#A9BBD3" TextWrapping="Wrap" />
                 <TextBlock Text="{Binding StatusLine}" Foreground="{Binding StatusBrush}" Margin="0,0,0,8" TextWrapping="Wrap" />
 

@@ -8,6 +8,8 @@ on:
       - "scripts/server_deploy_step.ps1"
       - "scripts/backup_bim_to_yandex.ps1"
       - "scripts/backup_connector_postgres.ps1"
+      - "scripts/audit_connector_devices.py"
+      - "scripts/provision_all_connector_vpn.py"
       - "scripts/server_backup_retention.ps1"
       - "scripts/setup_connector_postgres_backup_task.ps1"
       - "scripts/setup_yandex_backup_task.ps1"
@@ -16,6 +18,8 @@ on:
   pull_request:
     paths:
       - "connector/server/**"
+      - "scripts/audit_connector_devices.py"
+      - "scripts/provision_all_connector_vpn.py"
       - ".github/workflows/deploy-connector-server.yml"
   workflow_dispatch:
 

@@ -58,6 +58,19 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
     {
         new()
         {
+            Version = "1.0.29",
+            PublishedAt = "31.07.2026",
+            Title = "VPN включается автоматически",
+            Changes = new[]
+            {
+                "После подключения по токену Connector сам устанавливает и включает VPN; пользователю нужно только один раз подтвердить UAC",
+                "Если актуальный VPN уже работает, Connector использует его без переустановки и повторных запросов прав администратора",
+                "SMB, heartbeat, обновления, синхронизация и Model Sharing используют защищённый маршрут к серверу по умолчанию",
+                "Исправлено восстановление VPN-конфигурации после перезапуска и состояние кнопок управления VPN"
+            }
+        },
+        new()
+        {
             Version = "1.0.28",
             PublishedAt = "31.07.2026",
             Title = "Надёжное подключение общей папки",
@@ -473,7 +486,7 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
         }
     }
 
-    private void Window_Loaded(object sender, RoutedEventArgs e)
+    private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
         Topmost = true;
         Activate();
@@ -488,9 +501,19 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
         {
             AppendLog("Стандарт Tekla: git недоступен (" + gitPath + ") " + gitDetails);
         }
-        _ = TryAutoConnectAsync();
-        _ = CheckUpdatesAsync(showDialogs: false);
-        _ = _standard?.RunTeklaSyncAsync(showDialogs: false, forceRefresh: false, autoApplyIfPossible: true) ?? Task.CompletedTask;
+        // Establish the device session and ensure its VPN before any automatic
+        // server-bound update/sync work. On an already provisioned PC the
+        // automatic tunnel service is up before Connector starts; on the first
+        // run bootstrap supplies the config and Connector asks for UAC once.
+        await TryAutoConnectAsync();
+        await CheckUpdatesAsync(showDialogs: false);
+        if (_standard is not null)
+        {
+            await _standard.RunTeklaSyncAsync(
+                showDialogs: false,
+                forceRefresh: false,
+                autoApplyIfPossible: true);
+        }
         _updateTimer.Interval = UpdateCheckInterval;
         _updateTimer.Start();
         _teklaSyncTimer.Interval = TeklaSyncCheckInterval;
@@ -889,15 +912,15 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
         // SmbSharePath/Interval/AutoStart/Token/SmbPassword writes — same values, sourced from the live AppSettings).
         // The Tekla local-path / publish-source TextBoxes live in the Стандарт module's StandardView; the module
         // populates them from _settings in its RefreshUi() (called from the ctor and after each token-connect).
-        var token = SettingsService.DecryptToken(_settings.TokenCipherBase64);
-        _connector?.LoadFromSettings(token);
-        SyncFeatureModules();
-
         // restore the VPN config (decrypt) so "Включить VPN" works after a restart without re-connecting
         if (!string.IsNullOrWhiteSpace(_settings.VpnConfigCipherBase64))
         {
             _lastVpnConfig = SettingsService.DecryptToken(_settings.VpnConfigCipherBase64);
         }
+
+        var token = SettingsService.DecryptToken(_settings.TokenCipherBase64);
+        _connector?.LoadFromSettings(token);
+        SyncFeatureModules();
 
         _timer.Interval = TimeSpan.FromSeconds(_settings.HeartbeatSeconds);
 
@@ -1355,7 +1378,17 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
             ModelSharingServerHost = string.IsNullOrWhiteSpace(_settings.ModelSharingServerHost) ? "62.113.36.107" : _settings.ModelSharingServerHost,
             ModelSharingServerPort = _settings.ModelSharingServerPort > 0 ? _settings.ModelSharingServerPort : 9990,
             ModelSharingIdentityEmail = _settings.ModelSharingIdentityEmail,
-            ModelSharingLastAppliedUtc = _settings.ModelSharingLastAppliedUtc
+            ModelSharingLastAppliedUtc = _settings.ModelSharingLastAppliedUtc,
+            // Preserve the last known-good tunnel until bootstrap supplies a
+            // replacement. A transient VPN provisioning error must not disable
+            // the controls or strand a working automatic tunnel.
+            VpnEnabled = _settings.VpnEnabled,
+            VpnTunnelName = _settings.VpnTunnelName,
+            VpnAddress = _settings.VpnAddress,
+            VpnSmbUnc = _settings.VpnSmbUnc,
+            VpnServerIp = _settings.VpnServerIp,
+            VpnConfigReceivedUtc = _settings.VpnConfigReceivedUtc,
+            VpnConfigCipherBase64 = _settings.VpnConfigCipherBase64
         };
         _settingsService.Save(_settings);
         _autoStartService.SetEnabled(true);
@@ -1372,9 +1405,12 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
 
         // VPN bundle from bootstrap (optional; gated by server). Config is persisted ENCRYPTED
         // (DPAPI) so "Включить VPN" works after a restart; kept in memory for immediate use.
-        _settings.VpnEnabled = bootstrap.Vpn.Enabled && !string.IsNullOrWhiteSpace(bootstrap.Vpn.Config);
-        if (_settings.VpnEnabled)
+        var bootstrapVpnAvailable =
+            bootstrap.Vpn.Enabled &&
+            !string.IsNullOrWhiteSpace(bootstrap.Vpn.Config);
+        if (bootstrapVpnAvailable)
         {
+            _settings.VpnEnabled = true;
             _lastVpnConfig = bootstrap.Vpn.Config;
             _settings.VpnTunnelName = bootstrap.Vpn.TunnelName;   // server-side tunnel name (informational)
             _settings.VpnAddress = bootstrap.Vpn.Address;
@@ -1385,84 +1421,81 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
             _settingsService.Save(_settings);
             AppendLog("Получена конфигурация VPN для доступа к общей папке.");
         }
+        else if (_settings.VpnEnabled && !string.IsNullOrWhiteSpace(_lastVpnConfig))
+        {
+            AppendLog(
+                "Сервер временно не обновил VPN-конфигурацию; используется последняя сохранённая рабочая версия.");
+        }
 
         _standard?.RefreshUi();
         SyncFeatureModules();
         AppendLog("Настройки сохранены.");
 
+        var vpnReady = false;
+        if (_settings.VpnEnabled &&
+            _shell.Vpn.Module("Общая папка (VPN)") is Features.Vpn.VpnModule vpnModule)
+        {
+            AppendLog("VPN включён по умолчанию. Проверяю автоматический туннель...");
+            var vpnResult = await vpnModule.EnsureEnabledAsync(
+                showResultDialog: false,
+                openShareOnSuccess: false);
+            vpnReady = vpnResult.IsSuccess;
+            if (vpnReady)
+            {
+                AppendLog("VPN готов. Дальнейшее подключение к серверу идёт через защищённый туннель.");
+            }
+            else
+            {
+                AppendLog(
+                    "Автоматическое включение VPN не выполнено: " + vpnResult.Message +
+                    " Connector продолжит работу и попробует прямое подключение.");
+            }
+        }
+
         var smbConnected = false;
         var smbConnectionRoute = string.Empty;
-        var directSmbHost = GetSmbHost(sharePath);
-        var directSmbReachable = await _tcpConnectivityProbe.CanConnectAsync(
-            directSmbHost,
+        var preferredSharePath = vpnReady ? ResolveVpnSmbUnc() : sharePath;
+        if (string.IsNullOrWhiteSpace(preferredSharePath))
+        {
+            preferredSharePath = sharePath;
+        }
+        var preferredSmbHost = GetSmbHost(preferredSharePath);
+        var preferredSmbReachable = await _tcpConnectivityProbe.CanConnectAsync(
+            preferredSmbHost,
             445,
             TimeSpan.FromSeconds(4));
 
-        if (directSmbReachable)
+        if (preferredSmbReachable)
         {
             try
             {
-                await ConnectSmbInternalAsync(bootstrap.SmbAccess.Login, bootstrap.SmbAccess.Password, sharePath, openExplorer: true);
+                await ConnectSmbInternalAsync(
+                    bootstrap.SmbAccess.Login,
+                    bootstrap.SmbAccess.Password,
+                    preferredSharePath,
+                    openExplorer: true);
                 smbConnected = true;
-                smbConnectionRoute = "напрямую";
+                smbConnectionRoute = vpnReady ? "через VPN" : "напрямую";
+                if (vpnReady)
+                {
+                    AppendLog("Общая папка автоматически подключена через VPN.");
+                }
             }
             catch (Exception ex) when (IsWindowsSmbConflict(ex))
             {
-                AppendLog("Прямое SMB-подключение не переключено автоматически (конфликт 1219). Текущая сессия SMB оставлена без изменений.");
+                AppendLog("SMB-подключение не переключено автоматически (конфликт 1219). Текущая сессия SMB оставлена без изменений.");
                 AppendLog("Детали SMB конфликта: " + ex.Message);
             }
             catch (Exception ex)
             {
-                AppendLog("Прямое SMB-подключение не выполнено: " + ex.Message);
+                AppendLog("SMB-подключение не выполнено: " + ex.Message);
             }
         }
         else
         {
             AppendLog(
-                $"Прямой SMB недоступен: сервер {directSmbHost}:445 не отвечает из этой сети. " +
-                "Провайдер или роутер блокирует исходящий SMB.");
-        }
-
-        if (!smbConnected)
-        {
-            var vpnUnc = ResolveVpnSmbUnc();
-            if (_settings.VpnEnabled && !string.IsNullOrWhiteSpace(vpnUnc))
-            {
-                var vpnHost = GetSmbHost(vpnUnc);
-                var vpnSmbReachable = await _tcpConnectivityProbe.CanConnectAsync(
-                    vpnHost,
-                    445,
-                    TimeSpan.FromSeconds(4));
-
-                if (vpnSmbReachable)
-                {
-                    try
-                    {
-                        await ConnectSmbInternalAsync(
-                            bootstrap.SmbAccess.Login,
-                            bootstrap.SmbAccess.Password,
-                            vpnUnc,
-                            openExplorer: true);
-                        smbConnected = true;
-                        smbConnectionRoute = "через VPN";
-                        AppendLog("Прямой SMB недоступен; общая папка автоматически подключена через VPN.");
-                    }
-                    catch (Exception ex)
-                    {
-                        AppendLog("Автоматическое SMB-подключение через VPN не выполнено: " + ex.Message);
-                    }
-                }
-                else
-                {
-                    AppendLog(
-                        "VPN-путь к общей папке пока недоступен. Включите VPN на вкладке «Общая папка (VPN)» — " +
-                        "после включения коннектор подключит папку автоматически.");
-                }
-            }
-            else
-            {
-                AppendLog("VPN-доступ к общей папке не настроен для этого устройства.");
-            }
+                $"SMB недоступен: сервер {preferredSmbHost}:445 не отвечает " +
+                (vpnReady ? "через VPN." : "из этой сети."));
         }
 
         _timer.Stop();
@@ -1479,8 +1512,7 @@ public partial class MainWindow : Window, IShellHost, IConnectorHost
                 smbConnected
                     ? $"Подключение выполнено. Общая SMB-папка подключена {smbConnectionRoute}, автоотправка heartbeat включена."
                     : "Подключение к серверу выполнено, heartbeat включён, но общая папка пока не подключена. " +
-                      "Прямой SMB (TCP 445) недоступен из этой сети. Включите VPN на вкладке «Общая папка (VPN)» — " +
-                      "после включения папка подключится автоматически.",
+                      "Проверьте статус VPN на вкладке «Общая папка (VPN)» и повторите подключение.",
                 "Structura Connector",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);

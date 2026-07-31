@@ -38,3 +38,22 @@ def test_routed_ips_are_normalized_and_deduplicated():
         "10.77.123.0/24",
         "62.113.36.107/32",
     ]
+
+
+def test_empty_device_allowlist_enables_vpn_for_every_device():
+    config = {"vpn": {"enabled": True, "device_allowlist": []}}
+
+    assert vpn.is_enabled_for_device(config, "device-a")
+    assert vpn.is_enabled_for_device(config, "device-b")
+
+
+def test_nonempty_device_allowlist_remains_an_explicit_canary_gate():
+    config = {
+        "vpn": {
+            "enabled": True,
+            "device_allowlist": ["canary-device"],
+        }
+    }
+
+    assert vpn.is_enabled_for_device(config, "canary-device")
+    assert not vpn.is_enabled_for_device(config, "other-device")

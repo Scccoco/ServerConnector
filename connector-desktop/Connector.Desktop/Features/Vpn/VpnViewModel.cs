@@ -160,38 +160,64 @@ public sealed class VpnViewModel : ObservableObject
 
     private async Task EnableAsync()
     {
+        await EnsureEnabledAsync(showResultDialog: true, openShareOnSuccess: true);
+    }
+
+    public async Task<VpnResult> EnsureEnabledAsync(
+        bool showResultDialog,
+        bool openShareOnSuccess)
+    {
         try
         {
             if (!_ctx.Enabled)
             {
-                DialogHandler?.Invoke("VPN-доступ не включён администратором.", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
+                const string message = "VPN-доступ не включён администратором.";
+                if (showResultDialog)
+                {
+                    DialogHandler?.Invoke(message, MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                return VpnResult.Fail(message);
             }
             if (string.IsNullOrWhiteSpace(_ctx.VpnConfig))
             {
-                DialogHandler?.Invoke(
-                    "Нет конфигурации VPN. Нажмите «Подключиться по токену» на вкладке «Коннектор», затем повторите.",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
+                const string message =
+                    "Нет конфигурации VPN. Нажмите «Подключиться по токену» на вкладке «Коннектор», затем повторите.";
+                if (showResultDialog)
+                {
+                    DialogHandler?.Invoke(message, MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                return VpnResult.Fail(message);
             }
 
             var tunnel = VpnTunnel;
             IsBusy = true;
-            StatusLine = "Включаем VPN... подтвердите запрос прав администратора (UAC).";
+            StatusLine = "Проверяем и включаем VPN. При первой установке подтвердите запрос UAC.";
             var result = await Task.Run(() => _vpnService.Enable(_ctx.VpnConfig, tunnel));
             Log?.Invoke("VPN enable: " + (result.IsSuccess ? "ok" : "fail") + " — " + result.Message);
-            DialogHandler?.Invoke(result.Message,
-                MessageBoxButton.OK, result.IsSuccess ? MessageBoxImage.Information : MessageBoxImage.Warning);
-            if (result.IsSuccess && !string.IsNullOrWhiteSpace(ResolvedUnc))
+            if (showResultDialog)
+            {
+                DialogHandler?.Invoke(
+                    result.Message,
+                    MessageBoxButton.OK,
+                    result.IsSuccess ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            }
+            if (result.IsSuccess &&
+                openShareOnSuccess &&
+                !string.IsNullOrWhiteSpace(ResolvedUnc))
             {
                 Log?.Invoke("VPN включён. Подключаю общую папку автоматически.");
                 OpenShareHandler?.Invoke(ResolvedUnc);
             }
+            return result;
         }
         catch (Exception ex)
         {
             Log?.Invoke("VPN enable error: " + ex.Message);
-            DialogHandler?.Invoke(ex.Message, MessageBoxButton.OK, MessageBoxImage.Error);
+            if (showResultDialog)
+            {
+                DialogHandler?.Invoke(ex.Message, MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            return VpnResult.Fail(ex.Message);
         }
         finally { IsBusy = false; RefreshStatus(); }
     }
